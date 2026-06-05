@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="natural">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>The Atelier</title>
+  <link rel="icon" href="/favicon.ico"/>
+  <link rel="stylesheet" href="/tokens.css"/>
+  <script>
+    (function(){
+      try {
+        var t = localStorage.getItem('atl_theme');
+        if (t) document.documentElement.dataset.theme = JSON.parse(t);
+      } catch(e){}
+    })();
+  </script>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="/lib/react.development.js"></script>
+<script src="/lib/react-dom.development.js"></script>
+<script src="/lib/babel.min.js"></script>
+
+<script>
+(function() {
+  var files = [
+    '/components.jsx',
+    '/shell.jsx',
+    '/chat.jsx',
+    '/memory.jsx',
+    '/notes.jsx',
+    '/research.jsx',
+    '/setup.jsx',
+    '/app.jsx',
+  ];
+  function loadNext(i) {
+    if (i >= files.length) return;
+    var url = files[i] + '?v=20260605';
+    fetch(url)
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + url);
+        return r.text();
+      })
+      .then(function(src) {
+        var compiled = Babel.transform(src, { presets: ['react', 'env'], filename: url }).code;
+        eval(compiled);
+        loadNext(i + 1);
+      })
+      .catch(function(e) {
+        console.error('[Atelier] load error:', e);
+        document.getElementById('root').innerHTML =
+          '<div style="font-family:monospace;padding:40px;color:#8A5A34">'
+          + '<p>' + e + '</p><p>Check the browser console.</p></div>';
+      });
+  }
+  loadNext(0);
+})();
+</script>
+</body>
+</html>

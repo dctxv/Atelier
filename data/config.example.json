@@ -1,0 +1,13 @@
+{
+  "endpoints": [
+    {
+      "id": "example-id",
+      "name": "OpenRouter",
+      "url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-or-v1-...",
+      "type": "cloud"
+    }
+  ],
+  "active_endpoint_id": "example-id",
+  "active_model": "openai/gpt-4o"
+}

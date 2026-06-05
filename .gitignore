@@ -1,0 +1,20 @@
+# User data — never commit (keep the example template)
+data/
+!data/config.example.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv/
+venv/
+
+# Logs
+server.log
+server.err
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,74 @@
+/* ====== The Atelier v2 — Design Tokens ====== */
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400;1,500;1,600&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500;1,600&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap');
+
+:root, [data-theme="natural"] {
+  --bg:         #F6F1E7;
+  --surface:    #EDE6D8;
+  --nav-bg:     #F1ECE2;
+  --thread-bg:  #FAF6EE;
+  --panel-bg:   #EAE3D4;
+  --text:       #18130E;
+  --text-q:     #7A6A58;
+  --text-2:     #9A8A78;
+  --text-3:     #C4B09A;
+  --border:     rgba(24,19,14,.07);
+  --border-2:   rgba(24,19,14,.13);
+  --rule:       rgba(24,19,14,.08);
+  --accent:     #8A5A34;
+  --accent-bg:  rgba(138,90,52,.09);
+  --accent-bd:  rgba(138,90,52,.24);
+  --accent-tx:  #7A4C28;
+  --dot:        #C4885A;
+  --bar:        rgba(138,90,52,.22);
+  --send-bg:    #8A5A34;
+  --send-fg:    #FFF4E8;
+  --font-d:     'Cormorant Garamond', Georgia, serif;
+  --font-b:     'Lora', Georgia, serif;
+  --font-m:     'IBM Plex Mono', monospace;
+  --t:          160ms ease;
+  --t2:         260ms ease;
+}
+
+[data-theme="mono"] {
+  --bg:         #0D0D0D;
+  --surface:    #131313;
+  --nav-bg:     #111111;
+  --thread-bg:  #0B0B0B;
+  --panel-bg:   #161616;
+  --text:       #E0DCD4;
+  --text-q:     #4A4844;
+  --text-2:     #6A6864;
+  --text-3:     #2E2C2A;
+  --border:     rgba(224,220,212,.06);
+  --border-2:   rgba(224,220,212,.11);
+  --rule:       rgba(224,220,212,.08);
+  --accent:     #9A9288;
+  --accent-bg:  rgba(154,146,136,.09);
+  --accent-bd:  rgba(154,146,136,.22);
+  --accent-tx:  #BCB4AC;
+  --dot:        #6A6460;
+  --bar:        rgba(154,146,136,.28);
+  --send-bg:    #1E1C1A;
+  --send-fg:    #E0DCD4;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+  font-family: var(--font-b); -webkit-font-smoothing: antialiased; }
+#root { height: 100%; display: flex; }
+button { background: none; border: none; cursor: pointer; color: inherit; font: inherit; }
+textarea, input { background: none; border: none; outline: none; color: inherit; font: inherit; }
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
+@keyframes breathe { 0%,100%{opacity:1;}50%{opacity:.25;} }
+@keyframes fadeUp  { from{transform:translateY(7px);}to{transform:translateY(0);} }
+@keyframes shimmer { from{background-position:200% 0;}to{background-position:-200% 0;} }
+@keyframes writing { 0%,100%{opacity:1;}50%{opacity:0;} }
+.fade-up      { animation: fadeUp .38s ease both; }
+.surface-enter{ animation: fadeUp .28s ease both; }
+.scroll       { overflow-y: auto; overflow-x: hidden; }
+.ph::placeholder { color: var(--text-q); opacity:.65; font-style:italic; }
+.shimmer {
+  background: linear-gradient(90deg,var(--surface) 25%,var(--panel-bg) 50%,var(--surface) 75%);
+  background-size:200% 100%; animation:shimmer 1.8s infinite; border-radius:3px;
+}

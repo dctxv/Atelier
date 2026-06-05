@@ -1,0 +1,367 @@
+/* ====== v2 Chat surface — The Atelier backend ====== */
+const { useState, useRef, useEffect } = React;
+
+/* ── Parse flat AI text into { lede, body } ── */
+function parseAiContent(text) {
+  text = (text || '').trim();
+  if (!text) return { lede:'', body:'' };
+  const dbl = text.indexOf('\n\n');
+  if (dbl === -1) return { lede:text, body:'' };
+  let lede = text.slice(0, dbl).trim();
+  let body = text.slice(dbl + 2).trim();
+  if (lede.length > 300) {
+    const s = lede.search(/[.!?]\s/);
+    if (s > 0) { body = lede.slice(s+2).trim() + (body ? '\n\n'+body : ''); lede = lede.slice(0,s+1).trim(); }
+  }
+  return { lede, body };
+}
+
+/* ── Session persistence (localStorage) ── */
+function loadSessions() {
+  try { return JSON.parse(localStorage.getItem('atl_sessions') || '[]'); } catch { return []; }
+}
+function saveSessions(sessions) {
+  try { localStorage.setItem('atl_sessions', JSON.stringify(sessions.slice(0,50))); } catch {}
+}
+function newSession(model) {
+  return { id: crypto.randomUUID(), name:'New chat', messages:[], model:model||null, createdAt:Date.now() };
+}
+
+/* ── Model picker dropdown ── */
+function ModelPickerDropdown({ current, onSelect, onClose }) {
+  const [models, setModels]   = useState([]);
+  const [query,  setQuery]    = useState('');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    fetch('/api/models')
+      .then(r => r.json())
+      .then(d => { setModels(d.models||[]); if(d.error) setErr(d.error); })
+      .catch(e => setErr(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const fn = e => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener('mousedown', fn);
+    return () => document.removeEventListener('mousedown', fn);
+  }, []);
+
+  const filtered = query ? models.filter(m => m.toLowerCase().includes(query.toLowerCase())) : models;
+
+  return (
+    <div ref={ref} style={{
+      position:'absolute', bottom:'calc(100% + 8px)', left:0,
+      width:320, background:'var(--surface)', border:'1px solid var(--border-2)',
+      borderRadius:10, zIndex:100, overflow:'hidden',
+      boxShadow:'0 8px 32px rgba(0,0,0,.2)',
+    }}>
+      <div style={{ padding:'9px 12px', borderBottom:'1px solid var(--border)', display:'flex', gap:8 }}>
+        <Ico n="search" size={11} color="var(--text-3)"/>
+        <input autoFocus value={query} onChange={e=>setQuery(e.target.value)}
+          placeholder="Search models…"
+          style={{ flex:1, fontFamily:'var(--font-m)', fontSize:12, color:'var(--text)' }}/>
+      </div>
+      <div style={{ maxHeight:260, overflowY:'auto' }}>
+        {loading && <div style={{padding:'18px',textAlign:'center'}}><Pulse size={8}/></div>}
+        {!loading && filtered.length===0 && (
+          <div style={{padding:'14px 14px',fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>
+            {err || (models.length===0 ? 'No endpoint configured — use /setup' : 'No matches')}
+          </div>
+        )}
+        {filtered.map((m,i) => {
+          const on = m===current;
+          return (
+            <button key={i} onClick={() => onSelect(m)}
+              style={{ width:'100%',textAlign:'left',padding:'9px 14px',
+                display:'flex',justifyContent:'space-between',alignItems:'center',
+                background:on?'var(--accent-bg)':'transparent',
+                borderLeft:`2px solid ${on?'var(--accent)':'transparent'}`,
+                cursor:'pointer',transition:'background var(--t)',
+                borderBottom:'1px solid var(--border)',
+              }}>
+              <span style={{fontFamily:'var(--font-b)',fontSize:13,fontStyle:'italic',
+                color:on?'var(--text)':'var(--text-q)',
+                overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:180}}>{m}</span>
+              <span style={{fontFamily:'var(--font-m)',fontSize:9,color:'var(--text-3)',
+                overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:120,flexShrink:0}}>
+                {m.includes('/')?m.split('/')[0]:''}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ChatSurface({ onSetup }) {
+  const [sessions,   setSessions]   = useState(() => loadSessions());
+  const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
+  const [streaming,  setStreaming]   = useState(false);
+  const [streamBuf,  setStreamBuf]  = useState('');
+  const [composer,   setComposer]   = useState('');
+  const [config,     setConfig]     = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [error,      setError]      = useState('');
+  const threadRef = useRef(null);
+  const abortRef  = useRef(null);
+
+  /* Load backend config (active model) */
+  useEffect(() => {
+    fetch('/api/config').then(r=>r.json()).then(setConfig).catch(()=>{});
+  }, []);
+
+  /* Init session if none */
+  useEffect(() => {
+    if (sessions.length === 0) {
+      const s = newSession(config?.active_model||null);
+      setSessions([s]);
+      setActiveId(s.id);
+    }
+  }, []);
+
+  useEffect(() => { saveSessions(sessions); }, [sessions]);
+
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [activeId, sessions, streamBuf]);
+
+  const session = sessions.find(s=>s.id===activeId) || sessions[0] || null;
+
+  function selectSession(id) { if (!streaming) setActiveId(id); }
+
+  function newSessionAction() {
+    const s = newSession(config?.active_model||null);
+    setSessions(prev => [s, ...prev]);
+    setActiveId(s.id);
+  }
+
+  function deleteSession(id) {
+    setSessions(prev => {
+      const next = prev.filter(s=>s.id!==id);
+      if (activeId===id) {
+        const first = next[0];
+        if (first) setActiveId(first.id);
+        else {
+          const s = newSession(config?.active_model||null);
+          setActiveId(s.id);
+          return [s];
+        }
+      }
+      return next.length ? next : (() => { const s=newSession(config?.active_model||null); setActiveId(s.id); return [s]; })();
+    });
+  }
+
+  async function handleModelSelect(model) {
+    setPickerOpen(false);
+    setConfig(prev => ({...prev, active_model:model}));
+    await fetch('/api/config', { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({active_model:model}) }).catch(()=>{});
+    setSessions(prev => prev.map(s => s.id===activeId ? {...s, model} : s));
+  }
+
+  async function handleSend() {
+    const text = composer.trim();
+    if (!text || streaming) return;
+
+    if (text === '/setup') { setComposer(''); if (onSetup) onSetup(); return; }
+
+    const model = session?.model || config?.active_model;
+    if (!model) { setError('No model selected — use /setup or pick one below.'); return; }
+
+    setComposer(''); setError('');
+
+    const userMsg = { role:'user', content:text };
+    const updatedMsgs = [...(session?.messages||[]), userMsg];
+    const sessionName = session?.name === 'New chat' ? text.slice(0,50) : session?.name;
+
+    setSessions(prev => prev.map(s => s.id===activeId
+      ? {...s, messages:updatedMsgs, name:sessionName} : s));
+
+    setStreaming(true); setStreamBuf('');
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const resp = await fetch('/api/chat/stream', {
+        method:'POST', signal:controller.signal,
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ model, messages:updatedMsgs }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf='', accumulated='';
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, {stream:true});
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw==='[DONE]') break;
+          try {
+            const evt = JSON.parse(raw);
+            if (evt.error) { setError(String(evt.error)); break; }
+            const delta = evt.choices?.[0]?.delta?.content;
+            if (delta) { accumulated+=delta; setStreamBuf(accumulated); }
+          } catch(_) {}
+        }
+      }
+
+      const aiMsg = { role:'assistant', content:accumulated, model };
+      setSessions(prev => prev.map(s => s.id===activeId
+        ? {...s, messages:[...updatedMsgs, aiMsg]} : s));
+      setStreamBuf('');
+    } catch(e) {
+      if (e.name!=='AbortError') setError('Stream failed — check your model connection.');
+    } finally {
+      setStreaming(false); abortRef.current = null;
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  }
+
+  /* Build rendered message list */
+  const msgs = session?.messages || [];
+  const renderedMsgs = [];
+  for (let i=0; i<msgs.length; i++) {
+    const msg = msgs[i];
+    if (msg.role==='user') {
+      if (i>0 && msgs[i-1].role==='assistant') renderedMsgs.push({type:'divider',key:`d${i}`});
+      renderedMsgs.push({type:'user',key:`u${i}`,text:msg.content});
+    } else if (msg.role==='assistant') {
+      const p = parseAiContent(msg.content);
+      renderedMsgs.push({type:'ai',key:`a${i}`,...p,model:msg.model,isLast:i===msgs.length-1&&!streaming});
+    }
+  }
+  const streamParsed = streaming ? parseAiContent(streamBuf) : null;
+  const activeModel = session?.model || config?.active_model || '';
+  const modelShort = activeModel.split('/').pop().split(':')[0] || '';
+  const noModel = !activeModel;
+  const tabs = sessions.map(s => ({id:s.id, label:s.name||'Untitled'}));
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}} className="surface-enter">
+
+      {/* Scrollable tab bar */}
+      <ChatTabBar
+        tabs={tabs}
+        active={activeId}
+        onSelect={selectSession}
+        onDelete={deleteSession}
+        onNew={newSessionAction}
+      />
+
+      {/* Thread */}
+      <div ref={threadRef} className="scroll" style={{
+        flex:1, background:'var(--thread-bg)', padding:'32px 0',
+        display:'flex', flexDirection:'column', gap:28,
+      }}>
+        {msgs.length===0 && !streaming && (
+          <EmptyState icon="chat"
+            title={noModel?'Welcome':'New conversation'}
+            subtitle={noModel?'type /setup to add a model':'send a message to begin'}/>
+        )}
+        {renderedMsgs.map(item => {
+          if (item.type==='divider') return (
+            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+              <TurnDots/>
+            </div>
+          );
+          if (item.type==='user') return (
+            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+              <UserQuery text={item.text}/>
+            </div>
+          );
+          if (item.type==='ai') return (
+            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+              <AiBlock lede={item.lede} body={item.body} model={item.model} isLast={item.isLast}/>
+            </div>
+          );
+          return null;
+        })}
+        {streaming && streamParsed && (
+          <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <AiBlock lede={streamParsed.lede} body={streamParsed.body}
+              model={activeModel} streaming={true}/>
+          </div>
+        )}
+        {error && (
+          <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>{error}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Composer */}
+      <div style={{flexShrink:0,background:'var(--thread-bg)',borderTop:'1px solid var(--border-2)'}}>
+        <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'14px 60px 18px'}}>
+          <textarea className="ph"
+            placeholder={noModel?'Type /setup to configure a model…':'Continue the conversation…'}
+            rows={2} value={composer}
+            onChange={e=>setComposer(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={streaming}
+            style={{width:'100%',resize:'none',fontFamily:'var(--font-b)',fontSize:15,
+              lineHeight:1.65,color:'var(--text)',opacity:streaming?0.5:1}}/>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+            paddingTop:8,borderTop:'1px solid var(--border)'}}>
+
+            {/* Model pill — clickable picker */}
+            <div style={{position:'relative'}}>
+              <button onClick={() => setPickerOpen(o=>!o)} style={{
+                display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
+                border:`1px solid ${pickerOpen?'var(--accent-bd)':'var(--border-2)'}`,
+                borderRadius:10,
+                background:pickerOpen?'var(--accent-bg)':'transparent',
+                cursor:'pointer',transition:'all var(--t)',
+              }}>
+                <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
+                  color:noModel?'var(--text-3)':'var(--accent-tx)'}}>
+                  {noModel?'◇ no model':`◆ ${modelShort}`}
+                </span>
+                <Ico n="chevron" size={9} color="var(--text-3)"
+                  style={{transform:pickerOpen?'rotate(180deg)':'none',transition:'transform var(--t)'}}/>
+              </button>
+              {pickerOpen && (
+                <ModelPickerDropdown
+                  current={activeModel}
+                  onSelect={handleModelSelect}
+                  onClose={()=>setPickerOpen(false)}
+                />
+              )}
+            </div>
+
+            {/* Send / Stop */}
+            {streaming ? (
+              <button onClick={()=>abortRef.current?.abort()} style={{
+                width:30,height:30,borderRadius:15,background:'var(--accent-bg)',
+                border:'1px solid var(--accent-bd)',display:'grid',placeItems:'center',cursor:'pointer'}}>
+                <span style={{width:8,height:8,background:'var(--accent)',borderRadius:2,display:'block'}}/>
+              </button>
+            ) : (
+              <button onClick={handleSend} style={{
+                width:30,height:30,borderRadius:15,background:'var(--send-bg)',
+                border:'1px solid var(--accent-bd)',display:'grid',placeItems:'center',cursor:'pointer'}}>
+                <Ico n="send" size={12} color="var(--send-fg)"/>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.V2Chat = { ChatSurface };
