@@ -255,6 +255,26 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
     created_at   INTEGER NOT NULL
 );
 
+-- ── Web search layer ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS search_cache (
+    id           TEXT PRIMARY KEY,
+    query_norm   TEXT NOT NULL,
+    params_hash  TEXT NOT NULL,         -- normalized query + params (recency/provider/depth)
+    response_json TEXT NOT NULL,        -- the serialized SearchResponse
+    fetched_at   INTEGER NOT NULL,
+    ttl_seconds  INTEGER NOT NULL,      -- volatility-aware TTL
+    hits         INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_search_cache_key ON search_cache(params_hash);
+
+CREATE TABLE IF NOT EXISTS search_provider_usage (
+    provider TEXT NOT NULL,
+    month    TEXT NOT NULL,             -- 'YYYY-MM'
+    calls    INTEGER DEFAULT 0,
+    errors   INTEGER DEFAULT 0,
+    PRIMARY KEY (provider, month)
+);
+
 CREATE TABLE IF NOT EXISTS request_timing (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     path        TEXT,

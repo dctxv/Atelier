@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from services import memory, metrics
+from services import memory, metrics, search
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -17,4 +17,5 @@ async def get_metrics():
         "jobs": await metrics.job_summary(),
         "queue": await jobs.stats(),
         "memory_atoms": await memory.count(),
+        "search": await search.metrics_summary(),
     }

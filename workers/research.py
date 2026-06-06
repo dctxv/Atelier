@@ -60,13 +60,14 @@ def _chunk_text(text: str) -> list[str]:
 
 
 async def _sub_agent(research_id: str, subq: str) -> list[dict]:
-    """Search one sub-question, fetch top pages, chunk, embed, persist."""
-    res = await search.search(subq, limit=RESULTS_PER_SUBQ)
+    """Search one sub-question via the search layer (cached, reranked, fresh),
+    then chunk + embed + persist the extracted content."""
+    resp = await search.search(subq, max_results=RESULTS_PER_SUBQ,
+                               top_k=RESULTS_PER_SUBQ, want_content=True)
     out: list[dict] = []
-    for r in res.get("results", []):
-        url, title = r.get("url", ""), r.get("title", "")
-        page = await search.fetch_page(url) if url else ""
-        body = page or r.get("content", "")
+    for r in resp.results:
+        url, title = r.url, r.title
+        body = r.content or r.snippet
         if not body:
             continue
         for piece in _chunk_text(body):

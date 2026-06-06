@@ -13,12 +13,105 @@ import json
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from services import config, http_client, retrieval, skills
+import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from services import config, http_client, retrieval, search, skills
 from workers import jobs
 
 router = APIRouter(prefix="/api")
 
 MEMORY_BUDGET_TOKENS = 700
+WEB_RESULTS = 5
+WEB_TOP_K = 3
+
+# ── Queries that are definitely time lookups ───────────────────────────────────
+_TIME_Q = re.compile(
+    r"\b(what(?:'s| is) (the )?time|current time|time (now|in|at)|"
+    r"what time is it|clock in|date (today|now|in)|today'?s date)\b", re.I)
+
+_ZONES = {
+    "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne",
+    "brisbane": "Australia/Brisbane", "perth": "Australia/Perth",
+    "adelaide": "Australia/Adelaide", "darwin": "Australia/Darwin",
+    "hobart": "Australia/Hobart", "auckland": "Pacific/Auckland",
+    "tokyo": "Asia/Tokyo", "london": "Europe/London",
+    "new york": "America/New_York", "los angeles": "America/Los_Angeles",
+    "chicago": "America/Chicago", "paris": "Europe/Paris",
+    "berlin": "Europe/Berlin", "dubai": "Asia/Dubai",
+    "singapore": "Asia/Singapore", "hong kong": "Asia/Hong_Kong",
+    "utc": "UTC",
+}
+
+# Signals that a query actually benefits from a live web search.
+_SEARCH_SIGNALS = re.compile(
+    r"\b(today|tonight|right now|just now|breaking|latest|current(ly)?|"
+    r"live|update[sd]?|recent(ly)?|this (morning|week|month|year)|"
+    r"news|price[sd]?|stock|weather|score[sd]?|standings?|results?|"
+    r"who (won|is winning)|announce[ds]?|launch(ed)?|release[ds]?|"
+    r"died?|killed|attack(ed)?|strike[sd]?|election|forecast|"
+    r"how (do|does|to)|what is|explain|definition|meaning of|vs\.?|"
+    r"compare|review|recommend|best|top \d|20[2-9]\d)\b", re.I)
+
+# Short conversational messages that are never worth searching.
+_CHAT_ONLY = re.compile(
+    r"^(hey|hi|hello|sup|yo|thanks?|thank you|ok|okay|sure|cool|got it|"
+    r"nice|great|lol|haha|wow|yes|no|nope|yep|please|sorry|excuse me|"
+    r"good morning|good night|good evening|how are you|what'?s up)[!?.,\s]*$", re.I)
+
+
+def _needs_web(text: str) -> bool:
+    """Return True only when a live web lookup is likely to improve the reply."""
+    t = (text or "").strip()
+    if not t or len(t) < 6:
+        return False
+    if _CHAT_ONLY.match(t):
+        return False
+    # Time lookups are handled separately with the system clock — no web needed.
+    if _TIME_Q.search(t):
+        return False
+    return bool(_SEARCH_SIGNALS.search(t))
+
+
+def _clock_data(text: str) -> dict | None:
+    """If the query asks for the current time/date, return structured clock data.
+
+    Emitted as atelier_clock over SSE — the frontend renders the card.
+    Nothing is injected into the model prompt; the card is the answer.
+    """
+    if not _TIME_Q.search(text):
+        return None
+    q = text.lower()
+    matched_key = next((k for k in _ZONES if k in q), None)
+
+    if matched_key:
+        zone_name = _ZONES[matched_key]
+        location = matched_key.title()
+        try:
+            tz = ZoneInfo(zone_name)
+            now = datetime.now(tz)
+        except Exception:
+            now = datetime.now().astimezone()
+            location = now.strftime("%Z") or "Local"
+    else:
+        # No city specified — use the server's actual local time, never UTC.
+        now = datetime.now().astimezone()
+        # Derive a clean label from the UTC offset (avoids Windows' long names).
+        offset_secs = now.utcoffset().total_seconds() if now.utcoffset() else 0
+        h, m = divmod(int(abs(offset_secs)) // 60, 60)
+        sign = "+" if offset_secs >= 0 else "-"
+        location = f"UTC{sign}{h}" if m == 0 else f"UTC{sign}{h}:{m:02d}"
+    # offset like (+10) or (-03)
+    offset_secs = now.utcoffset().total_seconds() if now.utcoffset() else 0
+    offset_h = int(offset_secs // 3600)
+    offset_str = f"({'+' if offset_h >= 0 else ''}{offset_h:02d})"
+    return {
+        "time": now.strftime("%I:%M%p").lstrip("0"),          # e.g. "2:52PM"
+        "date": now.strftime(f"%A, %B, %d, %Y {offset_str}"), # e.g. "Saturday, June, 06, 2026 (+10)"
+        "location": location,
+        "iso": now.isoformat(),
+    }
 
 
 def _last_user_text(messages: list[dict]) -> str:
@@ -51,6 +144,49 @@ async def chat_stream(request: Request):
     messages = list(body.get("messages", []))
     user_text = _last_user_text(messages)
 
+    # 0. Web search / clock grounding.
+    #    Time queries: emit atelier_clock card — no text injection, no web call.
+    #    Other queries: classify first, only call Tavily when it would actually help.
+    web_trace = None
+    clock_data = None
+    if body.get("web_search") and user_text:
+        clock_data = _clock_data(user_text)
+        if clock_data:
+            pass  # card is the answer; model answers from its own knowledge
+        elif _needs_web(user_text):
+            try:
+                resp = await search.search(user_text, max_results=WEB_RESULTS,
+                                           top_k=WEB_TOP_K, want_content=True)
+                if resp.results:
+                    as_of_str = ""
+                    if resp.as_of:
+                        as_of_str = f" (fetched {datetime.fromtimestamp(resp.as_of, timezone.utc):%Y-%m-%d})"
+                    lines = [
+                        f"[WEB SEARCH{as_of_str}] You have live web results below. "
+                        "Answer directly from them. Do NOT say you lack web access, "
+                        "have a knowledge cutoff, or cannot browse — you are looking at "
+                        "real search results right now. Cite the source URLs inline."
+                    ]
+                    for r in resp.results:
+                        body_text = (r.content or r.snippet or "")[:600]
+                        lines.append(f"- {r.title} ({r.url})\n  {body_text}")
+                    messages = _inject(messages, "\n".join(lines))
+                    web_trace = {
+                        "query": user_text,
+                        "providers": resp.providers_used,
+                        "from_cache": resp.from_cache,
+                        "as_of": resp.as_of,
+                        "results": [
+                            {"title": r.title, "url": r.url,
+                             "published_at": r.published_at, "stale": r.stale}
+                            for r in resp.results
+                        ],
+                    }
+            except Exception:
+                pass  # search must never break a reply
+        # if neither branch fires, the toggle is on but this message doesn't
+        # benefit from search — reply from model knowledge, no trace emitted.
+
     # 1. Memory injection (retrieve is a fast local read).
     atoms = await retrieval.retrieve(user_text, budget_tokens=MEMORY_BUDGET_TOKENS) if user_text else []
     mem_block = retrieval.format_block(atoms)
@@ -75,6 +211,12 @@ async def chat_stream(request: Request):
 
     async def generate():
         assistant_chunks: list[str] = []
+        if clock_data:
+            yield f"data: {json.dumps({'atelier_clock': clock_data})}\n\n"
+            yield "data: [DONE]\n\n"
+            return  # card is the complete answer; no LLM call needed
+        elif web_trace:
+            yield f"data: {json.dumps({'atelier_search': web_trace})}\n\n"
         try:
             async with http_client.client().stream(
                 "POST", f"{ep['url']}/chat/completions", json=payload,

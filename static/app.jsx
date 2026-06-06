@@ -25,6 +25,7 @@ function App() {
   const [theme,       setTheme]       = useState(()=>ls('atl_theme','natural'));
   const [showWelcome, setShowWelcome] = useState(false);
   const [showSetup,   setShowSetup]   = useState(false);
+  const [showSearchSetup, setShowSearchSetup] = useState(false);
 
   useEffect(()=>lsSet('atl_surface',surface),[surface]);
   useEffect(()=>{
@@ -40,13 +41,14 @@ function App() {
 
   function dismissWelcome(){localStorage.setItem('atl_welcomed','1');setShowWelcome(false);}
   function openSetup(){setShowWelcome(false);setShowSetup(true);}
+  function openSearchSetup(){setShowSearchSetup(true);}
   function handleSetupSaved(){setShowSetup(false);setSurface('chat');}
 
   const toggleTheme=()=>setTheme(t=>t==='natural'?'mono':'natural');
 
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':     return <ChatSurface onSetup={openSetup}/>;
+      case 'chat':     return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup}/>;
       case 'research': return <ResearchSurface/>;
       case 'memory':   return <MemorySurface/>;
       case 'notes':    return <NotesSurface/>;
@@ -62,6 +64,7 @@ function App() {
       </div>
       {showWelcome && <WelcomeModal onSetup={openSetup} onClose={dismissWelcome}/>}
       {showSetup   && <SetupModal onClose={()=>setShowSetup(false)} onSaved={handleSetupSaved}/>}
+      {showSearchSetup && <SearchSetupModal onClose={()=>setShowSearchSetup(false)} onSaved={()=>setShowSearchSetup(false)}/>}
     </div>
   );
 }

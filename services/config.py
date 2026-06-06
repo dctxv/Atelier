@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from . import crypto, db
+from . import crypto, db  # noqa: F401  (crypto used by secret helpers)
 
 
 def _normalize(url: str) -> str:
@@ -32,6 +32,22 @@ async def set_setting(key: str, value):
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, value if value is None else str(value)),
     )
+
+
+# ── Encrypted secrets (provider API keys) ─────────────────────────────────────
+# Stored the same way endpoint keys are: encrypted at rest, never returned raw.
+
+async def set_secret(name: str, value: str):
+    await set_setting(f"secret:{name}", crypto.encrypt(value or ""))
+
+
+async def get_secret(name: str) -> str:
+    enc = await get_setting(f"secret:{name}")
+    return crypto.decrypt(enc) if enc else ""
+
+
+async def has_secret(name: str) -> bool:
+    return bool(await get_setting(f"secret:{name}"))
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────

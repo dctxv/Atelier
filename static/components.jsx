@@ -24,6 +24,7 @@ const IC = {
   moon:    "M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z",
   refresh: "M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 005.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 013.51 15",
   trash:   "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
+  globe:   "M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20",
 };
 
 function Ico({ n, size=16, color='currentColor', style }) {
@@ -154,6 +155,137 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
   );
 }
 
+/* ── Clock card (system-clock answer for time queries) ── */
+function ClockCard({ data }) {
+  if (!data) return null;
+  return (
+    <div className="fade-up" style={{
+      display:'flex', alignItems:'center', justifyContent:'space-between',
+      padding:'18px 22px', marginBottom:14,
+      background:'var(--surface)', border:'1px solid var(--border-2)',
+      borderRadius:12, gap:20, flexShrink:0,
+    }}>
+      {/* Time */}
+      <span style={{
+        fontFamily:'var(--font-d)', fontSize:38, fontWeight:500,
+        letterSpacing:'-.01em', color:'var(--text)', lineHeight:1, whiteSpace:'nowrap',
+      }}>
+        {data.time}
+      </span>
+      {/* Date + location */}
+      <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
+        <span style={{fontFamily:'var(--font-m)',fontSize:12,color:'var(--text-q)',letterSpacing:'.01em'}}>
+          {data.date}
+        </span>
+        <span style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',letterSpacing:'.04em'}}>
+          {data.location}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ── Web search trace (shows the real query + real sources used) ── */
+function _domain(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return (url || '').replace(/^https?:\/\//, '').split('/')[0].replace(/^www\./, ''); }
+}
+function _relTime(epoch) {
+  if (!epoch) return '';
+  const d = Date.now()/1000 - epoch;
+  if (d < 3600) return Math.max(1,Math.round(d/60))+'m ago';
+  if (d < 86400) return Math.round(d/3600)+'h ago';
+  if (d < 86400*30) return Math.round(d/86400)+'d ago';
+  try { return new Date(epoch*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
+  catch { return ''; }
+}
+
+function WebSearchTrace({ trace, searching=false }) {
+  const [open, setOpen] = React.useState(false);
+  const [showAll, setShowAll] = React.useState(false);
+  const results = (trace && trace.results) || [];
+  const shown = showAll ? results : results.slice(0, 3);
+  const extra = results.length - shown.length;
+  const label = searching ? 'Searching the web' : 'Searched the web';
+
+  return (
+    <div className="fade-up" style={{ flexShrink:0, marginBottom:14,
+      border:'1px solid var(--border-2)', borderRadius:10, overflow:'hidden',
+      background:'var(--surface)' }}>
+      {/* header */}
+      <button onClick={()=>setOpen(o=>!o)} style={{ width:'100%', display:'flex',
+        alignItems:'center', gap:9, padding:'9px 12px', cursor:'pointer',
+        background:'transparent', transition:'background var(--t)' }}>
+        {searching
+          ? <Pulse size={11} style={{ background:'var(--accent)' }}/>
+          : <Ico n="globe" size={13} color="var(--accent-tx)"/>}
+        <span style={{ fontFamily:'var(--font-m)', fontSize:11, letterSpacing:'.02em',
+          color:'var(--text-q)', flex:1, textAlign:'left' }}>
+          {label}
+          {!searching && results.length>0 &&
+            <span style={{ color:'var(--text-3)' }}> · {results.length} source{results.length>1?'s':''}</span>}
+        </span>
+        {trace && trace.providers && trace.providers.length>0 && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+            border:'1px solid var(--border-2)', borderRadius:6, padding:'1px 6px',
+            textTransform:'capitalize' }}>
+            {trace.from_cache ? 'cache' : trace.providers[0]}
+          </span>
+        )}
+        <Ico n="chevron" size={10} color="var(--text-3)"
+          style={{ transform:open?'rotate(180deg)':'none', transition:'transform var(--t)' }}/>
+      </button>
+
+      {open && trace && (
+        <div style={{ borderTop:'1px solid var(--border)', padding:'10px 12px' }}>
+          {/* the actual query */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+            <Ico n="search" size={11} color="var(--text-3)"/>
+            <span style={{ fontFamily:'var(--font-b)', fontSize:12.5, fontStyle:'italic',
+              color:'var(--text-q)' }}>{trace.query}</span>
+          </div>
+          {/* real sources */}
+          <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+            {shown.map((r,i) => {
+              const dom = _domain(r.url);
+              return (
+                <a key={i} href={r.url} target="_blank" rel="noreferrer"
+                  style={{ display:'flex', alignItems:'center', gap:9, padding:'6px 6px',
+                    borderRadius:7, textDecoration:'none', transition:'background var(--t)' }}
+                  onMouseEnter={e=>e.currentTarget.style.background='var(--accent-bg)'}
+                  onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <img src={`https://icons.duckduckgo.com/ip3/${dom}.ico`} width="15" height="15"
+                    style={{ borderRadius:3, flexShrink:0, opacity:.9 }}
+                    onError={e=>{e.target.style.visibility='hidden';}}/>
+                  <span style={{ fontFamily:'var(--font-b)', fontSize:12.5, color:'var(--text)',
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>
+                    {r.title || dom}
+                  </span>
+                  {r.published_at && (
+                    <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)', flexShrink:0 }}>
+                      {_relTime(r.published_at)}
+                    </span>
+                  )}
+                  <span style={{ fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)',
+                    flexShrink:0, maxWidth:140, overflow:'hidden', textOverflow:'ellipsis',
+                    whiteSpace:'nowrap' }}>{dom}</span>
+                </a>
+              );
+            })}
+          </div>
+          {extra>0 && (
+            <button onClick={()=>setShowAll(true)} style={{ marginTop:6, marginLeft:6,
+              fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--accent-tx)',
+              cursor:'pointer', background:'transparent' }}>
+              +{extra} more
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── User query ── */
 function UserQuery({ text, compact=false }) {
   return (
@@ -204,4 +336,4 @@ function EmptyState({ icon='more', title, subtitle }) {
   );
 }
 
-Object.assign(window, { Ico, Pulse, ModelBadge, TurnDots, AiBlock, UserQuery, SectionLabel, Rule, EmptyState });
+Object.assign(window, { Ico, Pulse, ModelBadge, TurnDots, AiBlock, UserQuery, SectionLabel, Rule, EmptyState, WebSearchTrace, ClockCard });

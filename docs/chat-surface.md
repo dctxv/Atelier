@@ -150,3 +150,111 @@ Errors display as plain italic text at the bottom of the thread in `var(--text-3
 - Error content from the stream (e.g. `invalid API key`) is passed through from the backend
 
 I didn't build a retry mechanism. If something fails, you just send the message again. The conversation history is intact so the context isn't lost.
+
+---
+
+## Thinking indicator
+
+There was a gap between pressing Send and the first token arriving that felt dead — no feedback at all. Not a spinner in the traditional sense; I wanted something that fit the Atelier's typographic register.
+
+What I landed on is a blinking "Thinking…" text that appears in place of the assistant response, formatted exactly like a real reply — the model colophon (`◆ model-name — The Atelier`) above it, the left accent bar beside it — but the body is just the word "Thinking…" with a CSS blink animation applied.
+
+```css
+@keyframes blink-thinking {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+```
+
+The animation runs at 1.4s so it pulses slowly — present, not frantic. It's in Lora italic to match the lede register, which gives it an authored rather than mechanical quality.
+
+The timing logic in `chat.jsx`:
+- `setThinking(true)` fires immediately when the user sends a message
+- `setThinking(false)` fires the moment the first model delta token arrives, or the moment an `atelier_clock` or `atelier_search` event arrives (because those mean *something* is already on screen)
+- If nothing arrives within the stream, clearing happens naturally when the stream ends
+
+I considered a spinner, a progress bar, a "generating…" badge. None of them felt right — a spinner implies a network call; a progress bar implies a known completion time. "Thinking…" blinking in the response position sets the correct expectation: the model is composing a reply, not loading a page.
+
+---
+
+## Web search toggle
+
+The Web toggle sits to the right of the model picker in the composer toolbar. It's a pill button with a globe icon that switches between an active (accent background) and inactive (ghost/border) state. Clicking it toggles `webSearch` in state, which is persisted to `localStorage` under the key `atl_web_search` — so if you close and reopen, the toggle is where you left it.
+
+When the toggle is on, `web_search: true` is included in the `/api/chat/stream` request body. The backend decides whether that actually triggers a search — the toggle is the *permission*, not a guarantee.
+
+Double-clicking the toggle (or typing `/setup search`) opens the search setup modal, which lets you paste a Tavily or Brave API key.
+
+### Why not always-on?
+
+For most messages the web adds cost and latency for zero benefit. "Explain the difference between FSRS and SM-2" is answered better by the model's parametric knowledge than by five web pages about SM-2. The toggle makes the intent explicit and lets me not search when I don't want to.
+
+---
+
+## Smart query classifier
+
+With the toggle on, the backend doesn't call Tavily on every message — it first runs the message through two regex passes:
+
+**`_CHAT_ONLY`** — a pattern that matches short conversational greetings and acknowledgements (`hey`, `hi`, `thanks`, `ok`, `sure`, `cool`, `lol`, etc.). These are never worth searching and were the source of an embarrassing early bug where typing "Hey" triggered five Tavily calls and returned a definition of the word.
+
+**`_SEARCH_SIGNALS`** — a broader pattern of signals that suggest live information would actually improve the answer: event language (`breaking`, `latest`, `announced`, `died`, `strikes`), time language (`today`, `right now`, `this week`), comparison/lookup language (`vs`, `review`, `best`, `top N`), explicit year references, and so on.
+
+```python
+def _needs_web(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or len(t) < 6:   return False
+    if _CHAT_ONLY.match(t):   return False
+    if _TIME_Q.search(t):     return False  # handled by clock, not web
+    return bool(_SEARCH_SIGNALS.search(t))
+```
+
+Time queries are explicitly excluded from web search here — they get the clock card path instead (see below).
+
+The classifier is rules-only: no model call, no round-trip. It runs in under a millisecond and adds nothing to the hot path. The goal is precision not recall — it's fine to miss an edge case and reply from model knowledge. What it must prevent is the waste and noise of searching on every conversational turn.
+
+---
+
+## Time queries — the clock card
+
+Asking "what time is it in Tokyo?" or "what's the current time?" gets a completely different treatment from a web search query. The model doesn't know the current time; no web search would help either (search results don't contain the current minute). What actually works is the server's system clock.
+
+When the backend detects a time query — via `_TIME_Q`, a regex over phrases like "what is the time", "current time", "time in", "what time is it", "today's date" — it:
+
+1. Looks for a city or timezone in the query text (matching against a small dictionary: Sydney, Melbourne, Tokyo, London, New York, Paris, Singapore, and about a dozen others)
+2. Looks up the current time in that timezone using Python's `ZoneInfo`
+3. If no city is mentioned, uses the server's local timezone (never UTC — UTC was the wrong default; it would show midnight-UTC and confuse anyone not thinking in UTC terms)
+4. Returns structured data: `{ time, date, location, iso }`
+
+That data is emitted to the frontend as a custom SSE event (`atelier_clock`) *before* any model tokens — then the stream immediately yields `[DONE]` and returns. **The LLM never runs.** The card is the complete answer.
+
+```python
+async def generate():
+    if clock_data:
+        yield f"data: {json.dumps({'atelier_clock': clock_data})}\n\n"
+        yield "data: [DONE]\n\n"
+        return   # ← no LLM call at all
+```
+
+The frontend `ClockCard` component renders the structured data as a clean card: the time large in Cormorant Garamond on the left (`3:42PM`), and date + timezone label on the right. No prose, no "The current time in Tokyo is…", no UTC conversion disclaimer. Just the card. Memory extraction is skipped too — there's nothing to extract from a time lookup.
+
+This path is dramatically faster than a model reply: server round-trip + card render, no GPU involved.
+
+### Location label edge case on Windows
+
+Python's `datetime.strftime("%Z")` returns the full Windows timezone name on Windows — things like "AUS Eastern Standard Time" or "UTC+10:00". Those are ugly in a small UI label. The fix: derive the label from the UTC offset instead of the timezone name, formatted as `UTC+10` or `UTC+5:30`. Clean and unambiguous.
+
+---
+
+## Custom SSE events
+
+The chat stream carries three event types:
+
+| Event | Triggered when | Frontend action |
+|---|---|---|
+| `atelier_clock` | Time query detected | Render `ClockCard`, end stream |
+| `atelier_search` | Web search ran and found results | Render `WebSearchTrace` before model tokens |
+| Standard `data: {...choices...}` | Model is producing tokens | Stream into `AiBlock` |
+
+Both `atelier_clock` and `atelier_search` arrive as the *first* event in the stream — before any model output. This means the indicator is never after-the-fact; the trace appears while the model is still generating.
+
+The `atelier_search` event carries the real query (what actually went to the provider, which may differ slightly from the user's raw text), the provider used, whether it was cache-served, and the list of actual sources with titles, URLs, and `published_at` timestamps. No placeholders. If a source has no date, the trace shows nothing for that field.

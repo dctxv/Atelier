@@ -97,15 +97,23 @@ function ModelPickerDropdown({ current, onSelect, onClose }) {
   );
 }
 
-function ChatSurface({ onSetup }) {
+function ChatSurface({ onSetup, onSearchSetup }) {
   const [sessions,   setSessions]   = useState(() => loadSessions());
   const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
   const [streamBuf,  setStreamBuf]  = useState('');
+  const [streamSearch, setStreamSearch] = useState(null);
+  const [streamClock,  setStreamClock]  = useState(null);
+  const [thinking,   setThinking]   = useState(false);
   const [composer,   setComposer]   = useState('');
   const [config,     setConfig]     = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [webSearch,  setWebSearch]  = useState(() => {
+    try { return localStorage.getItem('atl_websearch') === '1'; } catch { return false; }
+  });
   const [error,      setError]      = useState('');
+
+  useEffect(() => { try { localStorage.setItem('atl_websearch', webSearch?'1':'0'); } catch {} }, [webSearch]);
   const threadRef = useRef(null);
   const abortRef  = useRef(null);
 
@@ -167,7 +175,8 @@ function ChatSurface({ onSetup }) {
     const text = composer.trim();
     if (!text || streaming) return;
 
-    if (text === '/setup') { setComposer(''); if (onSetup) onSetup(); return; }
+    if (text === '/setup' || text === '/setup model') { setComposer(''); if (onSetup) onSetup(); return; }
+    if (text === '/setup search') { setComposer(''); if (onSearchSetup) onSearchSetup(); return; }
 
     const model = session?.model || config?.active_model;
     if (!model) { setError('No model selected — use /setup or pick one below.'); return; }
@@ -181,16 +190,18 @@ function ChatSurface({ onSetup }) {
     setSessions(prev => prev.map(s => s.id===activeId
       ? {...s, messages:updatedMsgs, name:sessionName} : s));
 
-    setStreaming(true); setStreamBuf('');
+    setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setThinking(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
+    let searchTrace = null;
+    let clockData = null;
 
     try {
       const resp = await fetch('/api/chat/stream', {
         method:'POST', signal:controller.signal,
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ model, messages:updatedMsgs }),
+        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -211,20 +222,22 @@ function ChatSurface({ onSetup }) {
           try {
             const evt = JSON.parse(raw);
             if (evt.error) { setError(String(evt.error)); break; }
+            if (evt.atelier_clock)  { clockData = evt.atelier_clock; setStreamClock(clockData); setThinking(false); continue; }
+            if (evt.atelier_search) { searchTrace = evt.atelier_search; setStreamSearch(searchTrace); continue; }
             const delta = evt.choices?.[0]?.delta?.content;
-            if (delta) { accumulated+=delta; setStreamBuf(accumulated); }
+            if (delta) { setThinking(false); accumulated+=delta; setStreamBuf(accumulated); }
           } catch(_) {}
         }
       }
 
-      const aiMsg = { role:'assistant', content:accumulated, model };
+      const aiMsg = { role:'assistant', content:accumulated, model, search:searchTrace, clock:clockData };
       setSessions(prev => prev.map(s => s.id===activeId
         ? {...s, messages:[...updatedMsgs, aiMsg]} : s));
-      setStreamBuf('');
+      setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setThinking(false);
     } catch(e) {
       if (e.name!=='AbortError') setError('Stream failed — check your model connection.');
     } finally {
-      setStreaming(false); abortRef.current = null;
+      setStreaming(false); setThinking(false); setStreamClock(null); abortRef.current = null;
     }
   }
 
@@ -242,7 +255,7 @@ function ChatSurface({ onSetup }) {
       renderedMsgs.push({type:'user',key:`u${i}`,text:msg.content});
     } else if (msg.role==='assistant') {
       const p = parseAiContent(msg.content);
-      renderedMsgs.push({type:'ai',key:`a${i}`,...p,model:msg.model,isLast:i===msgs.length-1&&!streaming});
+      renderedMsgs.push({type:'ai',key:`a${i}`,...p,model:msg.model,search:msg.search,clock:msg.clock,isLast:i===msgs.length-1&&!streaming});
     }
   }
   const streamParsed = streaming ? parseAiContent(streamBuf) : null;
@@ -286,15 +299,39 @@ function ChatSurface({ onSetup }) {
           );
           if (item.type==='ai') return (
             <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
-              <AiBlock lede={item.lede} body={item.body} model={item.model} isLast={item.isLast}/>
+              {item.clock  && <ClockCard data={item.clock}/>}
+              {item.search && <WebSearchTrace trace={item.search}/>}
+              {(item.lede || item.body) && <AiBlock lede={item.lede} body={item.body} model={item.model} isLast={item.isLast}/>}
             </div>
           );
           return null;
         })}
-        {streaming && streamParsed && (
+        {streaming && (
           <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
-            <AiBlock lede={streamParsed.lede} body={streamParsed.body}
-              model={activeModel} streaming={true}/>
+            {streamClock  && <ClockCard data={streamClock}/>}
+            {streamSearch && <WebSearchTrace trace={streamSearch} searching={thinking}/>}
+            {thinking && !streamSearch && (
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
+                <ModelBadge model={activeModel}/>
+                <span style={{color:'var(--text-3)',fontSize:10}}>—</span>
+                <span style={{fontFamily:'var(--font-d)',fontSize:12.5,fontStyle:'italic',color:'var(--text-3)'}}>
+                  The Atelier
+                </span>
+              </div>
+            )}
+            {thinking && !streamSearch && (
+              <div style={{display:'flex',gap:20}}>
+                <div style={{width:1.5,background:'var(--bar)',borderRadius:1,flexShrink:0}}/>
+                <span style={{fontFamily:'var(--font-d)',fontSize:21,fontStyle:'italic',
+                  color:'var(--text-3)',animation:'blink-thinking 1.1s ease-in-out infinite'}}>
+                  Thinking…
+                </span>
+              </div>
+            )}
+            {streamBuf && streamParsed && (streamParsed.lede || streamParsed.body) && (
+              <AiBlock lede={streamParsed.lede} body={streamParsed.body}
+                model={activeModel} streaming={true}/>
+            )}
           </div>
         )}
         {error && (
@@ -318,29 +355,49 @@ function ChatSurface({ onSetup }) {
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
             paddingTop:8,borderTop:'1px solid var(--border)'}}>
 
-            {/* Model pill — clickable picker */}
-            <div style={{position:'relative'}}>
-              <button onClick={() => setPickerOpen(o=>!o)} style={{
-                display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
-                border:`1px solid ${pickerOpen?'var(--accent-bd)':'var(--border-2)'}`,
-                borderRadius:10,
-                background:pickerOpen?'var(--accent-bg)':'transparent',
-                cursor:'pointer',transition:'all var(--t)',
-              }}>
+            {/* Left controls: model picker + web search toggle */}
+            <div style={{display:'flex',alignItems:'center',gap:7}}>
+              {/* Model pill — clickable picker */}
+              <div style={{position:'relative'}}>
+                <button onClick={() => setPickerOpen(o=>!o)} style={{
+                  display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
+                  border:`1px solid ${pickerOpen?'var(--accent-bd)':'var(--border-2)'}`,
+                  borderRadius:10,
+                  background:pickerOpen?'var(--accent-bg)':'transparent',
+                  cursor:'pointer',transition:'all var(--t)',
+                }}>
+                  <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
+                    color:noModel?'var(--text-3)':'var(--accent-tx)'}}>
+                    {noModel?'◇ no model':`◆ ${modelShort}`}
+                  </span>
+                  <Ico n="chevron" size={9} color="var(--text-3)"
+                    style={{transform:pickerOpen?'rotate(180deg)':'none',transition:'transform var(--t)'}}/>
+                </button>
+                {pickerOpen && (
+                  <ModelPickerDropdown
+                    current={activeModel}
+                    onSelect={handleModelSelect}
+                    onClose={()=>setPickerOpen(false)}
+                  />
+                )}
+              </div>
+
+              {/* Web search toggle */}
+              <button onClick={()=>setWebSearch(v=>!v)}
+                onDoubleClick={()=>onSearchSetup&&onSearchSetup()}
+                title={webSearch?'Web search on — double-click to configure providers'
+                                :'Web search off — double-click to configure providers'}
+                style={{
+                  display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
+                  border:`1px solid ${webSearch?'var(--accent-bd)':'var(--border-2)'}`,
+                  borderRadius:10,
+                  background:webSearch?'var(--accent-bg)':'transparent',
+                  cursor:'pointer',transition:'all var(--t)',
+                }}>
+                <Ico n="globe" size={11} color={webSearch?'var(--accent-tx)':'var(--text-3)'}/>
                 <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
-                  color:noModel?'var(--text-3)':'var(--accent-tx)'}}>
-                  {noModel?'◇ no model':`◆ ${modelShort}`}
-                </span>
-                <Ico n="chevron" size={9} color="var(--text-3)"
-                  style={{transform:pickerOpen?'rotate(180deg)':'none',transition:'transform var(--t)'}}/>
+                  color:webSearch?'var(--accent-tx)':'var(--text-3)'}}>Web</span>
               </button>
-              {pickerOpen && (
-                <ModelPickerDropdown
-                  current={activeModel}
-                  onSelect={handleModelSelect}
-                  onClose={()=>setPickerOpen(false)}
-                />
-              )}
             </div>
 
             {/* Send / Stop */}

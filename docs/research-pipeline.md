@@ -24,7 +24,7 @@ push key findings → memory (source_kind="research")
 ## The parts that matter
 
 - **Parallel fan-out.** The sub-agents run under one `asyncio.gather`, so total time ≈ the *slowest* sub-agent + synthesis, not the sum. This is the single most important property of the phase — serial fan-out would make five sub-questions five times slower for no reason — so it's an explicit thing I check.
-- **A real search backend.** Default is a local **SearXNG** instance (free, private, no API key); it falls back to scraping DuckDuckGo HTML, then to a local system-clock answer for time queries. Fetched pages are cached by URL within a run. Research genuinely can't be "working" without a search backend, so this is a prerequisite, not an afterthought.
+- **A real search backend.** Research no longer scrapes search engines itself — it calls the dedicated **search layer** ([web-search.md](web-search.md)) once per sub-question, so it inherits caching, freshness, the provider fallback chain (Tavily primary, DuckDuckGo/SearXNG free fallbacks), local rerank, and the stale-link guard for free. Research genuinely can't be "working" without a search backend, so this is a prerequisite, not an afterthought.
 - **Grounding.** The synthesizer is told to use *only* the provided source chunks. The report ships with a plain list of source URLs. The chunks themselves are ranked against the query embedding (in memory, since we just embedded them) so the synthesizer sees the most relevant material first.
 - **Findings → memory.** Each key finding becomes an atom (deduped), so a week later chat can use what the research found without me re-running anything. That's the integration model paying off.
 

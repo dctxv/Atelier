@@ -37,6 +37,7 @@ These docs exist so that when I come back to this in six months, or when I hand 
 | [memory.md](memory.md) | Memory atoms, background extraction, dedup, consolidation, chat injection |
 | [flashcards.md](flashcards.md) | FSRS-6 scheduling, decks, paste import, AI card generation |
 | [sharing.md](sharing.md) | Expiring share links over uploaded files |
+| [web-search.md](web-search.md) | The search layer — freshness, cache, provider fallback chain, rerank, real-time |
 | [research-pipeline.md](research-pipeline.md) | Planner → parallel sub-agents → grounded synthesis → memory |
 | [notes-cowriter.md](notes-cowriter.md) | Selection-based AI writing actions, ingest-on-save |
 | [email.md](email.md) | IMAP sync, categorize, on-demand drafts, explicit-send-only |

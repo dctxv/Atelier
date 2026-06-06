@@ -32,6 +32,7 @@ from routers import (
     metrics as metrics_router,
     notes,
     research as research_router,
+    search as search_router,
     skills,
     tasks,
     web,
@@ -100,7 +101,7 @@ for r in (
     auth_router.router, config_router.router, chat.router, memory.router, notes.router,
     tasks.router, files.router, research_router.router, skills.router, flashcards.router,
     cowriter_router.router, email_router.router, mcp_router.router, web.router,
-    metrics_router.router,
+    search_router.router, metrics_router.router,
 ):
     app.include_router(r)
 

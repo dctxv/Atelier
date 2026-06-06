@@ -238,4 +238,106 @@ function SetupModal({ onClose, onSaved }) {
   );
 }
 
-Object.assign(window, { WelcomeModal, SetupModal });
+function SearchSetupModal({ onClose, onSaved }) {
+  const [providers, setProviders] = useState([]);
+  const [tavily, setTavily] = useState('');
+  const [brave,  setBrave]  = useState('');
+  const [saving, setSaving] = useState(false);
+  const [done,   setDone]   = useState(false);
+
+  const load = () => fetch('/api/search/providers').then(r=>r.json())
+    .then(d=>setProviders(d.providers||[])).catch(()=>{});
+  React.useEffect(() => { load(); }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/search/keys', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ ...(tavily.trim()?{tavily:tavily.trim()}:{}),
+                            ...(brave.trim()?{brave:brave.trim()}:{}) }),
+    }).catch(()=>{});
+    setSaving(false); setDone(true);
+    await load();
+    setTimeout(() => { if (onSaved) onSaved(); }, 900);
+  }
+
+  const dot = (ok) => ({width:7,height:7,borderRadius:'50%',display:'inline-block',
+    background: ok?'var(--accent)':'var(--border-2)'});
+
+  return (
+    <Backdrop>
+      <ModalCard width={500}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
+          <div>
+            <SectionLabel style={{marginBottom:6}}>Web Search</SectionLabel>
+            <h2 style={{fontFamily:'var(--font-d)',fontSize:26,fontWeight:400,
+              fontStyle:'italic',color:'var(--text)',lineHeight:1.1}}>Connect search</h2>
+          </div>
+          <button onClick={onClose} style={{color:'var(--text-3)',padding:4}}>
+            <Ico n="close" size={16} color="currentColor"/>
+          </button>
+        </div>
+
+        <p style={{fontFamily:'var(--font-b)',fontSize:13.5,lineHeight:1.7,
+          color:'var(--text-q)',marginBottom:20}}>
+          Add a provider key for fast, fresh, real-time results — or continue
+          keyless (DuckDuckGo, best-effort). <strong>Tavily</strong> is recommended:
+          free 1,000 searches/month, news + dates in one call.
+        </p>
+
+        <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:16}}>
+          {[
+            {label:'Tavily API key (recommended)', val:tavily, set:setTavily, ph:'tvly-…'},
+            {label:'Brave Search API key (optional)', val:brave, set:setBrave, ph:'BSA…'},
+          ].map(({label,val,set,ph}) => (
+            <div key={label}>
+              <label style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',
+                letterSpacing:'.1em',textTransform:'uppercase',display:'block',marginBottom:6}}>
+                {label}
+              </label>
+              <input type="password" value={val} onChange={e=>set(e.target.value)}
+                onKeyDown={e=>e.key==='Enter'&&handleSave()} placeholder={ph}
+                style={{width:'100%',padding:'10px 12px',fontFamily:'var(--font-m)',fontSize:13,
+                  color:'var(--text)',background:'var(--thread-bg)',
+                  border:'1px solid var(--border-2)',borderRadius:8}}/>
+            </div>
+          ))}
+        </div>
+
+        {providers.length>0 && (
+          <div style={{border:'1px solid var(--border)',borderRadius:8,padding:'10px 12px',marginBottom:18}}>
+            {providers.map(p => (
+              <div key={p.name} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0'}}>
+                <span style={dot(p.available)}/>
+                <span style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text)',
+                  textTransform:'capitalize',flex:1}}>{p.name}</span>
+                <span style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)'}}>
+                  {p.has_key ? 'key set' : (p.cost_per_call===0 ? 'free' : 'no key')}
+                  {p.remaining!=null ? ` · ${p.remaining} left` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={handleSave} disabled={saving} style={{
+            flex:1,padding:'12px 0',borderRadius:9,
+            background:'var(--send-bg)',border:'1px solid var(--accent-bd)',
+            fontFamily:'var(--font-b)',fontSize:14,fontStyle:'italic',
+            color:'var(--send-fg)',cursor:saving?'default':'pointer',opacity:saving?0.7:1}}>
+            {done?'Saved ✓':saving?'Saving…':'Save keys'}
+          </button>
+          <button onClick={onClose} style={{padding:'12px 20px',borderRadius:9,
+            background:'transparent',border:'1px solid var(--border-2)',
+            fontFamily:'var(--font-m)',fontSize:11.5,color:'var(--text-3)',
+            cursor:'pointer',letterSpacing:'.04em'}}>
+            Continue keyless
+          </button>
+        </div>
+      </ModalCard>
+    </Backdrop>
+  );
+}
+
+Object.assign(window, { WelcomeModal, SetupModal, SearchSetupModal });
