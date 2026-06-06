@@ -71,6 +71,25 @@ function TurnDots() {
   );
 }
 
+/* ── Inline renderer: **bold** + emoji upright ── */
+function renderInline(text) {
+  if (!text) return text;
+  // Match **bold** spans or common emoji (surrogate pairs + misc symbol blocks)
+  const re = /\*\*([^*\n]+)\*\*|([☀-➿]|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDEFF]|\uD83E[\uDD00-\uDDFF])/g;
+  const out = [];
+  let k = 0, i = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > i) out.push(text.slice(i, m.index));
+    if (m[1] !== undefined)
+      out.push(<strong key={k++} style={{ fontWeight:700 }}>{m[1]}</strong>);
+    else
+      out.push(<span key={k++} style={{ fontStyle:'normal' }}>{m[2]}</span>);
+    i = m.index + m[0].length;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out.length ? out : text;
+}
+
 /* ── AI block — lede + left accent bar ── */
 function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false }) {
   const ledeFs = compact ? 16.5 : 21;
@@ -97,7 +116,7 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
             <p style={{ fontFamily:'var(--font-d)', fontSize:ledeFs, fontStyle:'italic',
               lineHeight: compact?1.62:1.68, color:'var(--text)',
               marginBottom: parts.length ? (compact?13:18) : 0 }}>
-              {lede}
+              {renderInline(lede)}
             </p>
           )}
           {/* body paragraphs */}
@@ -108,11 +127,11 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
               <div key={i} style={{ display:'flex', gap:compact?12:16, marginBottom:mb }}>
                 <span style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent)',
                   flexShrink:0, paddingTop:compact?3:4, letterSpacing:'.04em' }}>{num[1]}</span>
-                <span style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh, color:'var(--text)' }}>{num[2]}</span>
+                <span style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh, color:'var(--text)' }}>{renderInline(num[2])}</span>
               </div>
             );
             return <p key={i} style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh,
-              color:'var(--text)', marginBottom:mb }}>{para}</p>;
+              color:'var(--text)', marginBottom:mb }}>{renderInline(para)}</p>;
           })}
           {/* streaming cursor */}
           {streaming && (
@@ -145,7 +164,7 @@ function UserQuery({ text, compact=false }) {
         <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--accent)',
           letterSpacing:'.1em', textTransform:'uppercase' }}>Q —</span>
         <p style={{ fontFamily:'var(--font-b)', fontSize:compact?13.5:15, fontStyle:'italic',
-          lineHeight:1.62, color:'var(--text-q)', textAlign:'right' }}>{text}</p>
+          lineHeight:1.62, color:'var(--text-q)', textAlign:'right' }}>{renderInline(text)}</p>
       </div>
       <div style={{ width:compact?20:24, height:compact?20:24, borderRadius:'50%', flexShrink:0,
         marginTop:18, background:'var(--accent-bg)', border:'1px solid var(--accent-bd)',

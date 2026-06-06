@@ -35,9 +35,23 @@ The wizard probes the endpoint, discovers available models, and lets you pick a 
 
 ## Configuration
 
-Config is stored in `data/config.json` and managed via the UI. No manual editing needed.
+Config (endpoints, active model, settings) is stored in `data/atelier.db` and managed via the UI. API keys are encrypted at rest. No manual editing needed. On first run, any legacy `data/*.json` files are imported into the database automatically.
+
+Optional environment variables:
+
+| Var | Purpose |
+|-----|---------|
+| `ATELIER_SECRET` | Passphrase used to derive the encryption key (portable across machines) |
+| `ATELIER_AUTH=1` | Turn on shared-secret auth (default off on localhost) |
+| `ATELIER_ORIGINS` | Comma-separated allowed CORS origins |
+| `SEARXNG_INSTANCE` | Local SearXNG base URL for research/web search |
 
 ## Tech
 
-- **Backend:** FastAPI + httpx (streams SSE responses from any OpenAI-compatible endpoint)
-- **Frontend:** React 18 (CDN) + Babel in-browser, design system from The Atelier hi-fi
+- **Backend:** FastAPI + httpx, structured into `services/` (logic), `workers/` (background jobs), `routers/` (thin HTTP).
+- **Storage:** SQLite (WAL, single serialized writer) with `sqlite-vec` for vectors and FTS5 for keyword search — one shared store behind a hybrid `retrieve()`.
+- **Embeddings:** local-first (hashing fallback or a configured `/embeddings` endpoint), cached by content hash.
+- **Scheduling:** APScheduler for periodic jobs; FSRS-6 (`fsrs`) for flashcards.
+- **Frontend:** React 18 (CDN) + Babel in-browser, design system from The Atelier hi-fi.
+
+See [`docs/`](docs/index.md) for the full architecture and design rationale.

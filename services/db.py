@@ -1,0 +1,144 @@
+"""SQLite storage core (WAL) with a single serialized writer.
+
+Design (Part 1.1):
+  - WAL journal so many readers run while one writer writes.
+  - ALL writes funnel through a one-thread executor, so there is effectively a
+    single writer connection. That is what keeps concurrent PC + phone +
+    background writes from ever hitting "database is locked".
+  - Reads run on a small pool of connections (WAL readers don't block).
+  - Every connection loads sqlite-vec and sets the WAL pragmas.
+
+Routers never import sqlite3; they call the async helpers here (or a repo
+module that wraps them). Nothing in this file imports FastAPI.
+"""
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import sqlite_vec
+
+DATA_DIR = Path("data")
+DB_PATH = DATA_DIR / "atelier.db"
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+# Standard embedding width across the app. Endpoint embeddings are projected to
+# this width (Matryoshka-style truncate/pad) so the vec0 tables stay fixed.
+EMBED_DIM = 256
+
+# A single writer thread => writes are serialized => no lock contention.
+_write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db-writer")
+# A few reader threads; WAL lets them run concurrently with the writer.
+_read_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-reader")
+
+_local = threading.local()
+
+
+def now() -> int:
+    """Integer epoch seconds — the timestamp convention used everywhere."""
+    return int(time.time())
+
+
+def _connect() -> sqlite3.Connection:
+    DATA_DIR.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _conn() -> sqlite3.Connection:
+    """One connection per worker thread, created lazily and reused."""
+    c = getattr(_local, "conn", None)
+    if c is None:
+        c = _connect()
+        _local.conn = c
+    return c
+
+
+# ── Low-level async wrappers ──────────────────────────────────────────────────
+
+async def read(fn):
+    """Run fn(conn) on a reader thread; return its result."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_read_pool, lambda: fn(_conn()))
+
+
+async def write(fn):
+    """Run fn(conn) on the single writer thread inside a transaction.
+
+    Commits on success, rolls back on error. fn may issue many statements.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _op():
+        conn = _conn()
+        try:
+            result = fn(conn)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+
+    return await loop.run_in_executor(_write_pool, _op)
+
+
+# ── Convenience helpers ───────────────────────────────────────────────────────
+
+async def execute(sql: str, params=()):
+    def op(c):
+        cur = c.execute(sql, params)
+        return cur.lastrowid
+    return await write(op)
+
+
+async def executemany(sql: str, seq):
+    def op(c):
+        c.executemany(sql, seq)
+    return await write(op)
+
+
+async def fetchall(sql: str, params=()) -> list[dict]:
+    def op(c):
+        return [dict(r) for r in c.execute(sql, params).fetchall()]
+    return await read(op)
+
+
+async def fetchone(sql: str, params=()):
+    def op(c):
+        row = c.execute(sql, params).fetchone()
+        return dict(row) if row else None
+    return await read(op)
+
+
+def serialize_f32(vec) -> bytes:
+    """Pack a float list for a vec0 float[] column / MATCH query."""
+    return sqlite_vec.serialize_float32(list(vec))
+
+
+# ── Migrations ────────────────────────────────────────────────────────────────
+
+async def init_db():
+    """Apply the idempotent schema. Safe to run on every startup."""
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+
+    def op(conn):
+        conn.executescript(sql)
+
+    await write(op)
+
+
+def shutdown():
+    _write_pool.shutdown(wait=True)
+    _read_pool.shutdown(wait=False)
