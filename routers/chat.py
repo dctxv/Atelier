@@ -187,11 +187,11 @@ async def chat_stream(request: Request):
                 if s_data and not s_data.get("error"):
                     messages = _inject(messages, f"[STOCK DATA] Current real-time stock quote for {s_data['symbol']}:\n{s_data}\nAnswer directly using this data.")
 
-    if body.get("web_search") and user_text:
+    if user_text:
         clock_data = _clock_data(user_text)
-        if clock_data:
-            pass  # card is the answer; model answers from its own knowledge
-        elif _needs_web(user_text):
+
+    if body.get("web_search") and user_text and not clock_data:
+        if _needs_web(user_text):
             try:
                 resp = await search.search(user_text, max_results=WEB_RESULTS,
                                            top_k=WEB_TOP_K, want_content=True)

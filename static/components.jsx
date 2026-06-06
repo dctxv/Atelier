@@ -72,46 +72,257 @@ function TurnDots() {
   );
 }
 
-/* ── Inline renderer: **bold** + emoji upright ── */
+/* ── Inline renderer: `code`, **bold**, emoji upright ── */
 function renderInline(text) {
   if (!text) return text;
-  // Match **bold** spans or common emoji (surrogate pairs + misc symbol blocks)
-  const re = /\*\*([^*\n]+)\*\*|([☀-➿]|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDEFF]|\uD83E[\uDD00-\uDDFF])/g;
+  // Inline code matched first so its contents are never bolded or emoji-processed
+  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|([☀-➿]|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDEFF]|\uD83E[\uDD00-\uDDFF])/g;
   const out = [];
-  let k = 0, i = 0, m;
+  let k = 0, pos = 0, m;
   while ((m = re.exec(text)) !== null) {
-    if (m.index > i) out.push(text.slice(i, m.index));
+    if (m.index > pos) out.push(text.slice(pos, m.index));
     if (m[1] !== undefined)
-      out.push(<strong key={k++} style={{ fontWeight:700 }}>{m[1]}</strong>);
+      out.push(<span key={k++} style={{ fontFamily:'var(--font-m)', fontSize:'0.875em',
+        background:'var(--surface)', padding:'1px 5px', borderRadius:3,
+        color:'var(--text)', fontStyle:'normal' }}>{m[1]}</span>);
+    else if (m[2] !== undefined)
+      out.push(<strong key={k++} style={{ fontWeight:700 }}>{m[2]}</strong>);
     else
-      out.push(<span key={k++} style={{ fontStyle:'normal' }}>{m[2]}</span>);
-    i = m.index + m[0].length;
+      out.push(<span key={k++} style={{ fontStyle:'normal' }}>{m[3]}</span>);
+    pos = m.index + m[0].length;
   }
-  if (i < text.length) out.push(text.slice(i));
+  if (pos < text.length) out.push(text.slice(pos));
   return out.length ? out : text;
 }
 
+/* ── Block parser ── */
+function splitTableRow(line) {
+  const cells = line.split('|').map(c => c.trim());
+  const start = cells.length > 0 && cells[0] === '' ? 1 : 0;
+  const end = cells.length > 0 && cells[cells.length-1] === '' ? cells.length-1 : cells.length;
+  return cells.slice(start, end);
+}
+
+function parseBlocks(raw) {
+  if (!raw) return [];
+  const lines = raw.split('\n');
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    // Code fence — capture verbatim; unclosed fence = rest of text is code
+    const fenceM = line.match(/^```(\w*)\s*$/);
+    if (fenceM) {
+      const lang = fenceM[1] || '';
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { codeLines.push(lines[i]); i++; }
+      if (i < lines.length) i++; // consume closing fence
+      blocks.push({ type:'code', lang, text:codeLines.join('\n') });
+      continue;
+    }
+
+    // ATX heading
+    const hdgM = line.match(/^(#{1,6})\s+(.+)$/);
+    if (hdgM) {
+      blocks.push({ type:'heading', level:hdgM[1].length, text:hdgM[2].trim() });
+      i++; continue;
+    }
+
+    // Horizontal rule --- *** ___ (3+ identical chars, nothing else)
+    if (/^([-*_])\1{2,}\s*$/.test(line.trim())) {
+      blocks.push({ type:'hr' }); i++; continue;
+    }
+
+    // Table: pipe-row + separator row
+    if (line.includes('|') && i+1 < lines.length) {
+      const sep = lines[i+1];
+      if (/^[\s|:\-]+$/.test(sep) && sep.includes('-') && sep.includes('|')) {
+        const headers = splitTableRow(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].includes('|')) { rows.push(splitTableRow(lines[i])); i++; }
+        blocks.push({ type:'table', headers, rows });
+        continue;
+      }
+    }
+
+    // Unordered list (- or * + space + non-whitespace — won't match HR)
+    if (/^\s*[-*]\s+\S/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+\S/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, '')); i++;
+      }
+      blocks.push({ type:'ulist', items }); continue;
+    }
+
+    // Ordered list (1. 1) 1·)
+    if (/^\s*\d+[.)·]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+[.)·]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+[.)·]\s+/, '')); i++;
+      }
+      blocks.push({ type:'olist', items }); continue;
+    }
+
+    // Paragraph: consume non-blank lines until a block-starter appears
+    const paraLines = [];
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim()) break;
+      if (/^```/.test(l) || /^#{1,6}\s/.test(l) || /^([-*_])\1{2,}\s*$/.test(l.trim())) break;
+      if (l.includes('|') && i+1 < lines.length) {
+        const s = lines[i+1];
+        if (/^[\s|:\-]+$/.test(s) && s.includes('-') && s.includes('|')) break;
+      }
+      if (/^\s*[-*]\s+\S/.test(l) || /^\s*\d+[.)·]\s+/.test(l)) break;
+      paraLines.push(l); i++;
+    }
+    if (paraLines.length) blocks.push({ type:'paragraph', text:paraLines.join(' ') });
+  }
+  return blocks;
+}
+
+/* ── Block renderer ── */
+function renderBlock(block, idx, compact, bodyFs, bodyLh) {
+  const mb = compact ? 10 : 13;
+  switch (block.type) {
+    case 'heading': {
+      const lvl = block.level;
+      const fontSizes = compact ? [17,15.5,14,13,12.5,12] : [24,20,17.5,16,15,14];
+      const fs = fontSizes[lvl-1] || (compact ? 12 : 14);
+      return (
+        <p key={idx} style={{
+          fontFamily:'var(--font-d)', fontSize:fs,
+          fontWeight: lvl<=2 ? 500 : 400,
+          fontStyle: lvl<=2 ? 'italic' : 'normal',
+          color:'var(--text)', lineHeight:1.25,
+          marginBottom: compact ? 8 : 10,
+          marginTop: idx > 0 ? (compact ? 10 : 14) : 0,
+        }}>{renderInline(block.text)}</p>
+      );
+    }
+    case 'paragraph':
+      return (
+        <p key={idx} style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh,
+          color:'var(--text)', marginBottom:mb }}>
+          {renderInline(block.text)}
+        </p>
+      );
+    case 'olist':
+      return (
+        <div key={idx} style={{ marginBottom:mb }}>
+          {block.items.map((item, j) => (
+            <div key={j} style={{ display:'flex', gap:compact?12:16, marginBottom:compact?5:7 }}>
+              <span style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent)',
+                flexShrink:0, paddingTop:compact?3:4, letterSpacing:'.04em' }}>{j+1}.</span>
+              <span style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh,
+                color:'var(--text)' }}>{renderInline(item)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    case 'ulist':
+      return (
+        <div key={idx} style={{ marginBottom:mb }}>
+          {block.items.map((item, j) => (
+            <div key={j} style={{ display:'flex', gap:compact?12:16, marginBottom:compact?5:7 }}>
+              <span style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent)',
+                flexShrink:0, paddingTop:compact?5:6 }}>–</span>
+              <span style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh,
+                color:'var(--text)' }}>{renderInline(item)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    case 'code':
+      return (
+        <div key={idx} style={{ marginBottom:compact?10:14 }}>
+          {block.lang && (
+            <div style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+              letterSpacing:'.08em', textTransform:'uppercase', marginBottom:4 }}>
+              {block.lang}
+            </div>
+          )}
+          <pre style={{
+            fontFamily:'var(--font-m)', fontSize:12.5, lineHeight:1.65,
+            color:'var(--text)', background:'var(--surface)',
+            padding:compact?'10px 12px':'12px 16px', borderRadius:8,
+            overflowX:'auto', whiteSpace:'pre', margin:0,
+            border:'1px solid var(--border-2)',
+          }}>{block.text}</pre>
+        </div>
+      );
+    case 'table':
+      return (
+        <div key={idx} style={{ marginBottom:compact?10:14, overflowX:'auto' }}>
+          <table style={{ borderCollapse:'collapse', width:'100%' }}>
+            <thead>
+              <tr>
+                {block.headers.map((h, j) => (
+                  <th key={j} style={{
+                    fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)',
+                    letterSpacing:'.08em', textTransform:'uppercase',
+                    padding:compact?'6px 10px':'8px 14px', textAlign:'left',
+                    borderBottom:'1.5px solid var(--border-2)', whiteSpace:'nowrap',
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, ri) => (
+                <tr key={ri} style={{ borderBottom:'1px solid var(--border)' }}>
+                  {row.map((cell, ci) => (
+                    <td key={ci} style={{
+                      fontFamily:'var(--font-b)', fontSize:compact?13:bodyFs, lineHeight:1.55,
+                      color:'var(--text)', padding:compact?'6px 10px':'8px 14px',
+                    }}>{renderInline(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    case 'hr':
+      return <div key={idx} style={{ height:1, background:'var(--rule)', margin:compact?'10px 0':'14px 0' }}/>;
+    default:
+      return null;
+  }
+}
+
 /* ── AI block — lede + left accent bar ── */
-function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false }) {
+function AiBlock({ text, model='', isLast, compact=false, streaming=false }) {
   const ledeFs = compact ? 16.5 : 21;
   const bodyFs = compact ? 14   : 16;
   const bodyLh = compact ? 1.75 : 1.92;
-  const parts  = body ? body.split('\n\n') : [];
   const rootRef = React.useRef(null);
 
   React.useEffect(() => {
     if (!streaming && window.renderMathInElement && rootRef.current) {
       window.renderMathInElement(rootRef.current, {
         delimiters: [
-          {left: '$$', right: '$$', display: true},
-          {left: '\\[', right: '\\]', display: true},
-          {left: '$', right: '$', display: false},
-          {left: '\\(', right: '\\)', display: false}
+          { left:'$$',  right:'$$',  display:true  },
+          { left:'\\[', right:'\\]', display:true  },
+          { left:'\\(', right:'\\)', display:false },
         ],
-        throwOnError: false
+        ignoredTags: ['script','noscript','style','textarea','pre','code'],
+        throwOnError: false,
       });
     }
-  }, [streaming, lede, body]);
+  }, [streaming, text]);
+
+  const blocks = parseBlocks(text || '');
+
+  // First block is italic Cormorant lede only when it is a plain paragraph
+  let ledeText = '';
+  let bodyBlocks = blocks;
+  if (blocks.length > 0 && blocks[0].type === 'paragraph') {
+    ledeText = blocks[0].text;
+    bodyBlocks = blocks.slice(1);
+  }
 
   return (
     <div className="fade-up" style={{ flexShrink:0 }}>
@@ -127,28 +338,16 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
       <div style={{ display:'flex', gap: compact?14:20 }}>
         <div style={{ width:1.5, background:'var(--bar)', borderRadius:1, flexShrink:0 }}/>
         <div ref={rootRef} style={{ flex:1 }}>
-          {/* lede */}
-          {lede && (
+          {/* lede — italic Cormorant display paragraph */}
+          {ledeText && (
             <p style={{ fontFamily:'var(--font-d)', fontSize:ledeFs, fontStyle:'italic',
               lineHeight: compact?1.62:1.68, color:'var(--text)',
-              marginBottom: parts.length ? (compact?13:18) : 0 }}>
-              {renderInline(lede)}
+              marginBottom: bodyBlocks.length ? (compact?13:18) : 0 }}>
+              {renderInline(ledeText)}
             </p>
           )}
-          {/* body paragraphs */}
-          {parts.map((para, i) => {
-            const mb = i < parts.length-1 ? (compact?10:13) : 0;
-            const num = para.match(/^(\d+\s*[·.])\s+([\s\S]+)$/);
-            if (num) return (
-              <div key={i} style={{ display:'flex', gap:compact?12:16, marginBottom:mb }}>
-                <span style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent)',
-                  flexShrink:0, paddingTop:compact?3:4, letterSpacing:'.04em' }}>{num[1]}</span>
-                <span style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh, color:'var(--text)' }}>{renderInline(num[2])}</span>
-              </div>
-            );
-            return <p key={i} style={{ fontFamily:'var(--font-b)', fontSize:bodyFs, lineHeight:bodyLh,
-              color:'var(--text)', marginBottom:mb }}>{renderInline(para)}</p>;
-          })}
+          {/* typed body blocks */}
+          {bodyBlocks.map((block, i) => renderBlock(block, i, compact, bodyFs, bodyLh))}
           {/* streaming cursor */}
           {streaming && (
             <span style={{ display:'inline-block', width:2, height:18,
@@ -157,10 +356,10 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
           {/* actions */}
           {isLast && !streaming && (
             <div style={{ display:'flex', gap:6, marginTop: compact?14:20 }}>
-              <button onClick={() => {
-                const text = (lede ? lede + '\n\n' : '') + (body || '');
-                navigator.clipboard.writeText(text);
-              }} style={{ fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)', padding:'2px 9px', border:'1px solid var(--border-2)', borderRadius:10, cursor:'pointer', background:'transparent' }}>Copy</button>
+              <button onClick={() => navigator.clipboard.writeText(text || '')}
+                style={{ fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)',
+                  padding:'2px 9px', border:'1px solid var(--border-2)', borderRadius:10,
+                  cursor:'pointer', background:'transparent' }}>Copy</button>
             </div>
           )}
         </div>

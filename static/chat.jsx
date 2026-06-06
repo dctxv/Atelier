@@ -1,21 +1,6 @@
 /* ====== v2 Chat surface — The Atelier backend ====== */
 const { useState, useRef, useEffect } = React;
 
-/* ── Parse flat AI text into { lede, body } ── */
-function parseAiContent(text) {
-  text = (text || '').trim();
-  if (!text) return { lede:'', body:'' };
-  const dbl = text.indexOf('\n\n');
-  if (dbl === -1) return { lede:text, body:'' };
-  let lede = text.slice(0, dbl).trim();
-  let body = text.slice(dbl + 2).trim();
-  if (lede.length > 300) {
-    const s = lede.search(/[.!?]\s/);
-    if (s > 0) { body = lede.slice(s+2).trim() + (body ? '\n\n'+body : ''); lede = lede.slice(0,s+1).trim(); }
-  }
-  return { lede, body };
-}
-
 /* ── Session persistence (localStorage) ── */
 function loadSessions() {
   try { return JSON.parse(localStorage.getItem('atl_sessions') || '[]'); } catch { return []; }
@@ -256,11 +241,9 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
       if (i>0 && msgs[i-1].role==='assistant') renderedMsgs.push({type:'divider',key:`d${i}`});
       renderedMsgs.push({type:'user',key:`u${i}`,text:msg.content});
     } else if (msg.role==='assistant') {
-      const p = parseAiContent(msg.content);
-      renderedMsgs.push({type:'ai',key:`a${i}`,...p,model:msg.model,search:msg.search,clock:msg.clock,isLast:i===msgs.length-1&&!streaming});
+      renderedMsgs.push({type:'ai',key:`a${i}`,text:msg.content,model:msg.model,search:msg.search,clock:msg.clock,isLast:i===msgs.length-1&&!streaming});
     }
   }
-  const streamParsed = streaming ? parseAiContent(streamBuf) : null;
   const activeModel = session?.model || config?.active_model || '';
   const modelShort = activeModel.split('/').pop().split(':')[0] || '';
   const noModel = !activeModel;
@@ -303,7 +286,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
             <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
               {item.clock  && <ClockCard data={item.clock}/>}
               {item.search && <WebSearchTrace trace={item.search}/>}
-              {(item.lede || item.body) && <AiBlock lede={item.lede} body={item.body} model={item.model} isLast={item.isLast}/>}
+              {item.text && <AiBlock text={item.text} model={item.model} isLast={item.isLast}/>}
             </div>
           );
           return null;
@@ -330,9 +313,8 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
                 </span>
               </div>
             )}
-            {streamBuf && streamParsed && (streamParsed.lede || streamParsed.body) && (
-              <AiBlock lede={streamParsed.lede} body={streamParsed.body}
-                model={activeModel} streaming={true}/>
+            {streamBuf && (
+              <AiBlock text={streamBuf} model={activeModel} streaming={true}/>
             )}
           </div>
         )}
