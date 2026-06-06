@@ -79,3 +79,17 @@ async def probe_endpoint(request: Request):
         return {"ok": True, "models": [m["id"] for m in resp.json().get("data", [])], "url": url}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e), "models": []}
+
+@router.put("/weather/keys")
+async def set_weather_keys(request: Request):
+    data = await request.json()
+    if "openweathermap" in data:
+        await config.set_secret("weather_api_key", data["openweathermap"])
+    return {"ok": True}
+
+@router.put("/stock/keys")
+async def set_stock_keys(request: Request):
+    data = await request.json()
+    if "finnhub" in data:
+        await config.set_secret("stock_api_key", data["finnhub"])
+    return {"ok": True}

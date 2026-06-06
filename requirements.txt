@@ -8,3 +8,5 @@ cryptography>=42.0
 itsdangerous>=2.1
 APScheduler>=3.10
 fsrs>=6.0
+sympy>=1.12
+pint>=0.23

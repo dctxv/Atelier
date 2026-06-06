@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from services import config, http_client, retrieval, search, skills
+from services import config, http_client, retrieval, search, skills, math_eval, weather, stock
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -25,6 +25,14 @@ router = APIRouter(prefix="/api")
 MEMORY_BUDGET_TOKENS = 700
 WEB_RESULTS = 5
 WEB_TOP_K = 3
+
+_WEATHER_Q = re.compile(
+    r"\b(weather|temperature|forecast|how (hot|cold) is it)\s*(in|for|at)?\s*([a-zA-Z\s,]+)\b", re.I
+)
+
+_STOCK_Q = re.compile(
+    r"\b(stock|price|quote|shares?)\s*(of|for)?\s*([A-Z]{1,5})\b", re.I
+)
 
 # ── Queries that are definitely time lookups ───────────────────────────────────
 _TIME_Q = re.compile(
@@ -144,11 +152,41 @@ async def chat_stream(request: Request):
     messages = list(body.get("messages", []))
     user_text = _last_user_text(messages)
 
-    # 0. Web search / clock grounding.
+    base_persona = (
+        "You are The Atelier, a sophisticated AI workspace assistant. "
+        "Provide direct, natural answers. Do not redundantly repeat your conclusions, equations, or exact phrases across paragraphs. "
+        "Use LaTeX formatting like \\( \\) or \\[ \\] for math."
+    )
+    messages = _inject(messages, base_persona)
+
+    # 0. Web search / clock grounding / math eval.
     #    Time queries: emit atelier_clock card — no text injection, no web call.
     #    Other queries: classify first, only call Tavily when it would actually help.
     web_trace = None
     clock_data = None
+    math_result = None
+
+    if user_text:
+        math_result = math_eval.evaluate(user_text)
+        if math_result:
+            messages = _inject(messages, f"[LOCAL COMPUTE] The exact mathematical/unit result is: {math_result}. Incorporate this seamlessly into a natural response. Do not repeat the equation redundantly.")
+        
+        weather_match = _WEATHER_Q.search(user_text)
+        if weather_match:
+            loc = weather_match.group(4).strip()
+            if loc:
+                w_data = await weather.get_weather(loc)
+                if w_data and not w_data.get("error"):
+                    messages = _inject(messages, f"[WEATHER DATA] Current weather for {w_data['location']}:\n{w_data}\nAnswer directly using this data.")
+
+        stock_match = _STOCK_Q.search(user_text)
+        if stock_match:
+            ticker = stock_match.group(3).strip()
+            if ticker:
+                s_data = await stock.get_stock(ticker)
+                if s_data and not s_data.get("error"):
+                    messages = _inject(messages, f"[STOCK DATA] Current real-time stock quote for {s_data['symbol']}:\n{s_data}\nAnswer directly using this data.")
+
     if body.get("web_search") and user_text:
         clock_data = _clock_data(user_text)
         if clock_data:

@@ -65,6 +65,8 @@ The fix was to download the files once and serve them from `/lib/`:
 
 The development builds include full error messages which is useful when things break. If I ever care about load time I'd switch to production builds — that would drop ReactDOM from 1.1MB to around 130KB.
 
+*(Note: We do use `cdn.jsdelivr.net` for KaTeX math rendering, as it's a non-critical visual enhancement that gracefully degrades if offline. If offline-first becomes an absolute requirement for math, KaTeX should be downloaded to `/lib/` as well).*
+
 ---
 
 ## Cache busting
@@ -90,6 +92,16 @@ const { ChatSurface } = window.V2Chat;
 This is unusual but it works cleanly for the sequential load model. The alternative would be to compile everything into a single file before eval — but that removes the benefit of keeping files separate and readable.
 
 What I'd do differently if starting over: use ES module `import()` with a small module loader instead of `window`. It would be cleaner and wouldn't pollute the global scope. But `window` works and isn't causing any problems right now.
+
+---
+
+## AI Message Rendering & Actions
+
+AI messages are parsed into a `lede` (italicized summary) and a `body` (detailed explanation). 
+
+**Math Rendering (KaTeX)**: The app uses KaTeX via CDN to render LaTeX (`\\[ \\]` and `\\( \\)`) directly in the browser. When an AI response finishes streaming, a `useEffect` hook in `AiBlock` triggers `renderMathInElement` on the block's content, automatically transforming plain-text LaTeX into beautifully formatted math formulas without requiring a complex markdown parsing pipeline.
+
+**Actions**: The AI response blocks feature a single action button: `Copy`. It reconstructs the full text (merging the lede and body) and writes it directly to the user's system clipboard using `navigator.clipboard.writeText()`.
 
 ---
 

@@ -97,6 +97,21 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
   const bodyFs = compact ? 14   : 16;
   const bodyLh = compact ? 1.75 : 1.92;
   const parts  = body ? body.split('\n\n') : [];
+  const rootRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!streaming && window.renderMathInElement && rootRef.current) {
+      window.renderMathInElement(rootRef.current, {
+        delimiters: [
+          {left: '$$', right: '$$', display: true},
+          {left: '\\[', right: '\\]', display: true},
+          {left: '$', right: '$', display: false},
+          {left: '\\(', right: '\\)', display: false}
+        ],
+        throwOnError: false
+      });
+    }
+  }, [streaming, lede, body]);
 
   return (
     <div className="fade-up" style={{ flexShrink:0 }}>
@@ -111,7 +126,7 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
       {/* bar + content */}
       <div style={{ display:'flex', gap: compact?14:20 }}>
         <div style={{ width:1.5, background:'var(--bar)', borderRadius:1, flexShrink:0 }}/>
-        <div style={{ flex:1 }}>
+        <div ref={rootRef} style={{ flex:1 }}>
           {/* lede */}
           {lede && (
             <p style={{ fontFamily:'var(--font-d)', fontSize:ledeFs, fontStyle:'italic',
@@ -142,11 +157,10 @@ function AiBlock({ lede, body, model='', isLast, compact=false, streaming=false 
           {/* actions */}
           {isLast && !streaming && (
             <div style={{ display:'flex', gap:6, marginTop: compact?14:20 }}>
-              {['Copy','Continue','Save'].map(l => (
-                <button key={l} style={{ fontFamily:'var(--font-m)', fontSize:9.5,
-                  color:'var(--text-3)', padding:'2px 9px',
-                  border:'1px solid var(--border-2)', borderRadius:10, cursor:'pointer' }}>{l}</button>
-              ))}
+              <button onClick={() => {
+                const text = (lede ? lede + '\n\n' : '') + (body || '');
+                navigator.clipboard.writeText(text);
+              }} style={{ fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)', padding:'2px 9px', border:'1px solid var(--border-2)', borderRadius:10, cursor:'pointer', background:'transparent' }}>Copy</button>
             </div>
           )}
         </div>

@@ -340,4 +340,82 @@ function SearchSetupModal({ onClose, onSaved }) {
   );
 }
 
-Object.assign(window, { WelcomeModal, SetupModal, SearchSetupModal });
+function WeatherSetupModal({ onClose, onSaved }) {
+  const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/weather/keys', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ openweathermap:key.trim() }),
+    }).catch(()=>{});
+    setSaving(false); setDone(true);
+    setTimeout(() => { if (onSaved) onSaved(); }, 900);
+  }
+
+  return (
+    <Backdrop>
+      <ModalCard width={500}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
+          <div>
+            <SectionLabel style={{marginBottom:6}}>Weather API</SectionLabel>
+            <h2 style={{fontFamily:'var(--font-d)',fontSize:26,fontWeight:400,fontStyle:'italic',color:'var(--text)',lineHeight:1.1}}>Connect Weather</h2>
+          </div>
+          <button onClick={onClose} style={{color:'var(--text-3)',padding:4}}><Ico n="close" size={16} color="currentColor"/></button>
+        </div>
+        <p style={{fontFamily:'var(--font-b)',fontSize:13.5,lineHeight:1.7,color:'var(--text-q)',marginBottom:20}}>Add an OpenWeatherMap API key to enable live weather context in chat.</p>
+        <div style={{marginBottom:24}}>
+          <label style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',letterSpacing:'.1em',textTransform:'uppercase',display:'block',marginBottom:6}}>OpenWeatherMap API Key</label>
+          <input type="password" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSave()} placeholder="API Key…" style={{width:'100%',padding:'10px 12px',fontFamily:'var(--font-m)',fontSize:13,color:'var(--text)',background:'var(--thread-bg)',border:'1px solid var(--border-2)',borderRadius:8}}/>
+        </div>
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={handleSave} disabled={saving} style={{flex:1,padding:'12px 0',borderRadius:9,background:'var(--send-bg)',border:'1px solid var(--accent-bd)',fontFamily:'var(--font-b)',fontSize:14,fontStyle:'italic',color:'var(--send-fg)',cursor:saving?'default':'pointer',opacity:saving?0.7:1}}>{done?'Saved ✓':saving?'Saving…':'Save key'}</button>
+          <button onClick={onClose} style={{padding:'12px 20px',borderRadius:9,background:'transparent',border:'1px solid var(--border-2)',fontFamily:'var(--font-m)',fontSize:11.5,color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>Close</button>
+        </div>
+      </ModalCard>
+    </Backdrop>
+  );
+}
+
+function StockSetupModal({ onClose, onSaved }) {
+  const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/stock/keys', {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ finnhub:key.trim() }),
+    }).catch(()=>{});
+    setSaving(false); setDone(true);
+    setTimeout(() => { if (onSaved) onSaved(); }, 900);
+  }
+
+  return (
+    <Backdrop>
+      <ModalCard width={500}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
+          <div>
+            <SectionLabel style={{marginBottom:6}}>Stock API</SectionLabel>
+            <h2 style={{fontFamily:'var(--font-d)',fontSize:26,fontWeight:400,fontStyle:'italic',color:'var(--text)',lineHeight:1.1}}>Connect Stocks</h2>
+          </div>
+          <button onClick={onClose} style={{color:'var(--text-3)',padding:4}}><Ico n="close" size={16} color="currentColor"/></button>
+        </div>
+        <p style={{fontFamily:'var(--font-b)',fontSize:13.5,lineHeight:1.7,color:'var(--text-q)',marginBottom:20}}>Add a Finnhub API key to enable live, real-time stock quotes in chat.</p>
+        <div style={{marginBottom:24}}>
+          <label style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',letterSpacing:'.1em',textTransform:'uppercase',display:'block',marginBottom:6}}>Finnhub API Key</label>
+          <input type="password" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSave()} placeholder="API Key…" style={{width:'100%',padding:'10px 12px',fontFamily:'var(--font-m)',fontSize:13,color:'var(--text)',background:'var(--thread-bg)',border:'1px solid var(--border-2)',borderRadius:8}}/>
+        </div>
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={handleSave} disabled={saving} style={{flex:1,padding:'12px 0',borderRadius:9,background:'var(--send-bg)',border:'1px solid var(--accent-bd)',fontFamily:'var(--font-b)',fontSize:14,fontStyle:'italic',color:'var(--send-fg)',cursor:saving?'default':'pointer',opacity:saving?0.7:1}}>{done?'Saved ✓':saving?'Saving…':'Save key'}</button>
+          <button onClick={onClose} style={{padding:'12px 20px',borderRadius:9,background:'transparent',border:'1px solid var(--border-2)',fontFamily:'var(--font-m)',fontSize:11.5,color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>Close</button>
+        </div>
+      </ModalCard>
+    </Backdrop>
+  );
+}
+
+Object.assign(window, { WelcomeModal, SetupModal, SearchSetupModal, WeatherSetupModal, StockSetupModal });

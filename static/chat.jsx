@@ -97,7 +97,7 @@ function ModelPickerDropdown({ current, onSelect, onClose }) {
   );
 }
 
-function ChatSurface({ onSetup, onSearchSetup }) {
+function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
   const [sessions,   setSessions]   = useState(() => loadSessions());
   const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
@@ -177,6 +177,8 @@ function ChatSurface({ onSetup, onSearchSetup }) {
 
     if (text === '/setup' || text === '/setup model') { setComposer(''); if (onSetup) onSetup(); return; }
     if (text === '/setup search') { setComposer(''); if (onSearchSetup) onSearchSetup(); return; }
+    if (text === '/setup weather') { setComposer(''); if (onWeatherSetup) onWeatherSetup(); return; }
+    if (text === '/setup stock') { setComposer(''); if (onStockSetup) onStockSetup(); return; }
 
     const model = session?.model || config?.active_model;
     if (!model) { setError('No model selected — use /setup or pick one below.'); return; }
