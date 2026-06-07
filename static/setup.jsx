@@ -71,6 +71,7 @@ function SetupModal({ onClose, onSaved }) {
   const [models,    setModels]   = useState([]);
   const [filter,    setFilter]   = useState('');
   const [saving,    setSaving]   = useState(false);
+  const [chosenModel, setChosenModel] = useState('');
 
   const PRESETS = [
     { label:'OpenRouter', url:'https://openrouter.ai/api/v1' },
@@ -116,8 +117,20 @@ function SetupModal({ onClose, onSaved }) {
       body:JSON.stringify({ active_model:model }),
     }).catch(()=>{});
 
+    setChosenModel(model);
+    setFilter('');
     setSaving(false);
     setStep(3);
+  }
+
+  async function handleSaveCheap(cheapModel) {
+    setSaving(true);
+    await fetch('/api/config', {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ cheap_model: cheapModel }),
+    }).catch(()=>{});
+    setSaving(false);
+    setStep(4);
     setTimeout(() => { if (onSaved) onSaved(); onClose(); }, 1400);
   }
 
@@ -129,11 +142,11 @@ function SetupModal({ onClose, onSaved }) {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
           <div>
             <SectionLabel style={{marginBottom:6}}>
-              {step===1?'Add API Endpoint':step===2?'Select Default Model':'Ready'}
+              {step===1?'Add API Endpoint':step===2?'Select Default Model':step===3?'Background Model':'Ready'}
             </SectionLabel>
             <h2 style={{fontFamily:'var(--font-d)',fontSize:26,fontWeight:400,
               fontStyle:'italic',color:'var(--text)',lineHeight:1.1}}>
-              {step===1?'Connect your AI':step===2?`${models.length} models available`:'All set.'}
+              {step===1?'Connect your AI':step===2?`${models.length} models available`:step===3?'Pick a fast model':'All set.'}
             </h2>
           </div>
           <button onClick={onClose} style={{color:'var(--text-3)',padding:4}}>
@@ -222,6 +235,51 @@ function SetupModal({ onClose, onSaved }) {
         )}
 
         {step===3 && (
+          <>
+            <p style={{fontFamily:'var(--font-b)',fontSize:13.5,lineHeight:1.7,
+              color:'var(--text-q)',marginBottom:16}}>
+              Pick a faster, cheaper model for background work — memory extraction, categorization, and flashcard generation. This keeps your main model free for actual answers. Or use the same model.
+            </p>
+            <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
+              border:'1px solid var(--border-2)',borderRadius:8,
+              background:'var(--thread-bg)',marginBottom:12}}>
+              <Ico n="search" size={12} color="var(--text-3)"/>
+              <input autoFocus value={filter} onChange={e=>setFilter(e.target.value)}
+                placeholder="Filter models…"
+                style={{flex:1,fontFamily:'var(--font-m)',fontSize:13,color:'var(--text)'}}/>
+            </div>
+            <div style={{maxHeight:200,overflowY:'auto',marginBottom:12}}>
+              {filtered.map((m,i) => {
+                const short = m.split('/').pop().split(':')[0];
+                return (
+                  <button key={i} onClick={()=>handleSaveCheap(m)} disabled={saving}
+                    style={{width:'100%',textAlign:'left',padding:'10px 12px',
+                      display:'flex',justifyContent:'space-between',alignItems:'baseline',
+                      borderBottom:'1px solid var(--border)',cursor:'pointer',
+                      background:'transparent',transition:'background var(--t)'}}
+                    onMouseEnter={e=>e.currentTarget.style.background='var(--accent-bg)'}
+                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <span style={{fontFamily:'var(--font-b)',fontSize:13.5,
+                      fontStyle:'italic',color:'var(--text)'}}>{short}</span>
+                    <span style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',
+                      maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={()=>handleSaveCheap(chosenModel)} disabled={saving}
+              style={{width:'100%',marginBottom:12,padding:'12px 0',borderRadius:9,
+                background:'transparent',border:'1px solid var(--border-2)',
+                fontFamily:'var(--font-m)',fontSize:11.5,
+                color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>
+              Use same model
+            </button>
+            <button onClick={()=>setStep(2)} style={{fontFamily:'var(--font-m)',fontSize:11,
+              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>← Back</button>
+          </>
+        )}
+
+        {step===4 && (
           <div style={{textAlign:'center',padding:'24px 0'}}>
             <div style={{width:40,height:40,borderRadius:'50%',
               background:'var(--accent-bg)',border:'1px solid var(--accent-bd)',

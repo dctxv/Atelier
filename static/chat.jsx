@@ -82,7 +82,47 @@ function ModelPickerDropdown({ current, onSelect, onClose }) {
   );
 }
 
-function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
+/* ── Command palette ── */
+function CommandPalette({ commands, activeIndex, onHover, onRun }) {
+  return (
+    <div style={{
+      position:'absolute', bottom:'calc(100% + 8px)', left:0,
+      width:340, background:'var(--surface)', border:'1px solid var(--border-2)',
+      borderRadius:10, zIndex:100, overflow:'hidden',
+      boxShadow:'0 8px 32px rgba(0,0,0,.2)',
+    }}>
+      {commands.map((cmd, i) => {
+        const active = i === activeIndex;
+        return (
+          <button key={cmd.id}
+            onMouseEnter={() => onHover(i)}
+            onClick={() => onRun(cmd)}
+            style={{
+              width:'100%', textAlign:'left',
+              padding:'9px 14px',
+              display:'flex', alignItems:'center', gap:8,
+              background: active ? 'var(--accent-bg)' : 'transparent',
+              borderLeft: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+              borderBottom: '1px solid var(--border)',
+              cursor:'pointer', transition:'background var(--t)',
+            }}>
+            <Ico n={cmd.icon} size={13} color={active ? 'var(--accent-tx)' : 'var(--text-3)'}/>
+            <span style={{
+              fontFamily:'var(--font-b)', fontSize:13, fontStyle:'italic',
+              color: active ? 'var(--text)' : 'var(--text-q)',
+              flex:1,
+            }}>{cmd.label}</span>
+            {cmd.hint && (
+              <span style={{fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)'}}>{cmd.hint}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme }) {
   const [sessions,   setSessions]   = useState(() => loadSessions());
   const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
@@ -97,6 +137,8 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
     try { return localStorage.getItem('atl_websearch') === '1'; } catch { return false; }
   });
   const [error,      setError]      = useState('');
+  const [paletteIndex,     setPaletteIndex]     = useState(0);
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
 
   useEffect(() => { try { localStorage.setItem('atl_websearch', webSearch?'1':'0'); } catch {} }, [webSearch]);
   const threadRef = useRef(null);
@@ -156,14 +198,34 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
     setSessions(prev => prev.map(s => s.id===activeId ? {...s, model} : s));
   }
 
+  const COMMANDS = [
+    { id:'new',     label:'New conversation',                   hint:'',               icon:'plus',   keywords:['new','chat','session'],                              run:() => newSessionAction() },
+    { id:'model',   label:'Switch model',                       hint:'',               icon:'chat',   keywords:['model','switch','pick'],                             run:() => setPickerOpen(true) },
+    { id:'web',     label:`Web search: ${webSearch?'on':'off'}`,hint:'toggle',         icon:'globe',  keywords:['web','search','toggle'],                             run:() => setWebSearch(v => !v) },
+    { id:'theme',   label:'Toggle theme',                       hint:'',               icon: (document.documentElement.dataset.theme==='mono'?'sun':'moon'), keywords:['theme','dark','light','mono'], run:() => onToggleTheme && onToggleTheme() },
+    { id:'setup',   label:'Set up model / endpoint',            hint:'/setup',         icon:'plus',   keywords:['setup','model','endpoint','api','connect'],          run:() => onSetup && onSetup() },
+    { id:'search',  label:'Configure web search',               hint:'/setup search',  icon:'globe',  keywords:['setup','search','tavily','brave','provider'],        run:() => onSearchSetup && onSearchSetup() },
+    { id:'weather', label:'Configure weather API',              hint:'/setup weather', icon:'globe',  keywords:['setup','weather','openweathermap'],                  run:() => onWeatherSetup && onWeatherSetup() },
+    { id:'stock',   label:'Configure stock API',                hint:'/setup stock',   icon:'globe',  keywords:['setup','stock','finnhub','quote'],                   run:() => onStockSetup && onStockSetup() },
+  ];
+
+  const paletteQuery = composer.startsWith('/') ? composer.slice(1).toLowerCase().trim() : null;
+  const filteredCommands = paletteQuery === null ? [] :
+    COMMANDS.filter(c => !paletteQuery ||
+      c.label.toLowerCase().includes(paletteQuery) ||
+      c.keywords.some(k => k.includes(paletteQuery)));
+  const paletteOpen = paletteQuery !== null && !paletteDismissed && filteredCommands.length > 0;
+
+  function runCommand(cmd) {
+    setComposer('');
+    setPaletteDismissed(false);
+    setPaletteIndex(0);
+    cmd.run();
+  }
+
   async function handleSend() {
     const text = composer.trim();
     if (!text || streaming) return;
-
-    if (text === '/setup' || text === '/setup model') { setComposer(''); if (onSetup) onSetup(); return; }
-    if (text === '/setup search') { setComposer(''); if (onSearchSetup) onSearchSetup(); return; }
-    if (text === '/setup weather') { setComposer(''); if (onWeatherSetup) onWeatherSetup(); return; }
-    if (text === '/setup stock') { setComposer(''); if (onStockSetup) onStockSetup(); return; }
 
     const model = session?.model || config?.active_model;
     if (!model) { setError('No model selected — use /setup or pick one below.'); return; }
@@ -229,6 +291,12 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
   }
 
   function handleKeyDown(e) {
+    if (paletteOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setPaletteIndex(i => Math.min(i+1, filteredCommands.length-1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setPaletteIndex(i => Math.max(i-1, 0)); return; }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runCommand(filteredCommands[paletteIndex]); return; }
+      if (e.key === 'Escape')    { e.preventDefault(); setPaletteDismissed(true); return; }
+    }
     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
@@ -327,11 +395,19 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup }) {
 
       {/* Composer */}
       <div style={{flexShrink:0,background:'var(--thread-bg)',borderTop:'1px solid var(--border-2)'}}>
-        <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'14px 60px 18px'}}>
+        <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'14px 60px 18px',position:'relative'}}>
+          {paletteOpen && (
+            <CommandPalette
+              commands={filteredCommands}
+              activeIndex={paletteIndex}
+              onHover={setPaletteIndex}
+              onRun={runCommand}
+            />
+          )}
           <textarea className="ph"
             placeholder={noModel?'Type /setup to configure a model…':'Continue the conversation…'}
             rows={2} value={composer}
-            onChange={e=>setComposer(e.target.value)}
+            onChange={e=>{ setComposer(e.target.value); setPaletteDismissed(false); setPaletteIndex(0); }}
             onKeyDown={handleKeyDown}
             disabled={streaming}
             style={{width:'100%',resize:'none',fontFamily:'var(--font-b)',fontSize:15,

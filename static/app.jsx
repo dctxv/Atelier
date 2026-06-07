@@ -52,7 +52,7 @@ function App() {
 
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':     return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup}/>;
+      case 'chat':     return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme}/>;
       case 'research': return <ResearchSurface/>;
       case 'memory':   return <MemorySurface/>;
       case 'notes':    return <NotesSurface/>;

@@ -142,4 +142,5 @@ async def public_config() -> dict:
         "endpoints": await list_endpoints(),
         "active_endpoint_id": await get_setting("active_endpoint_id"),
         "active_model": await get_setting("active_model"),
+        "cheap_model": await get_setting("cheap_model"),
     }
