@@ -10,3 +10,5 @@ APScheduler>=3.10
 fsrs>=6.0
 sympy>=1.12
 pint>=0.23
+pypdf>=4.0
+python-docx>=1.1

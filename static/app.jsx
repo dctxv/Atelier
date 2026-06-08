@@ -1,10 +1,11 @@
 /* ====== App root — The Atelier v2 ====== */
 const { useState, useEffect } = React;
 
-const { ChatSurface }     = window.V2Chat;
-const { ResearchSurface } = window.V2Research;
-const { MemorySurface }   = window.V2Memory;
-const { NotesSurface }    = window.V2Notes;
+const { ChatSurface }       = window.V2Chat;
+const { ResearchSurface }   = window.V2Research;
+const { MemorySurface }     = window.V2Memory;
+const { NotesSurface }      = window.V2Notes;
+const { DocumentsSurface }  = window;
 
 function Placeholder({ name }) {
   return (
@@ -52,11 +53,12 @@ function App() {
 
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':     return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme}/>;
-      case 'research': return <ResearchSurface/>;
-      case 'memory':   return <MemorySurface/>;
-      case 'notes':    return <NotesSurface/>;
-      default:         return <Placeholder name={surface.charAt(0).toUpperCase()+surface.slice(1)}/>;
+      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme}/>;
+      case 'research':  return <ResearchSurface/>;
+      case 'memory':    return <MemorySurface/>;
+      case 'notes':     return <NotesSurface/>;
+      case 'documents': return <DocumentsSurface/>;
+      default:          return <Placeholder name={surface.charAt(0).toUpperCase()+surface.slice(1)}/>;
     }
   };
 

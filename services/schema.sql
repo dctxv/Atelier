@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS memory_atom (
 );
 CREATE INDEX IF NOT EXISTS idx_atom_created ON memory_atom(created_at);
 CREATE INDEX IF NOT EXISTS idx_atom_source  ON memory_atom(source_kind, source_id);
+-- Partial index for pinned-only lookup; keeps the hot-path pinned fetch sub-ms.
+CREATE INDEX IF NOT EXISTS idx_atom_pinned  ON memory_atom(pinned, created_at) WHERE pinned=1;
 
 -- Vectors live in a sqlite-vec vec0 table keyed by memory_atom.rowid.
 -- v1 stores float32 @ 256 dims with cosine distance; int8 quantization is the
@@ -293,6 +295,62 @@ CREATE TABLE IF NOT EXISTS job_timing (
     at            INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_jobtiming_type ON job_timing(type, at);
+
+-- ── Documents + RAG ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS document (
+    id          TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL,
+    mime        TEXT,
+    byte_size   INTEGER,
+    doc_date    INTEGER,           -- best-effort original date; NULL if unknown
+    status      TEXT NOT NULL,     -- queued | extracting | embedding | ready | failed
+    error       TEXT,              -- reason when status = failed
+    chunk_count INTEGER DEFAULT 0,
+    abstract    TEXT,              -- cheap-model 2-sentence summary, filled after ready
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_document_status ON document(status, created_at);
+
+CREATE TABLE IF NOT EXISTS document_chunk (
+    id          TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    seq         INTEGER NOT NULL,  -- order within the document
+    text        TEXT NOT NULL,
+    char_start  INTEGER,           -- byte offsets in extracted text (for citation)
+    char_end    INTEGER,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_docchunk_doc ON document_chunk(document_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS document_chunk_vec USING vec0(
+    embedding float[256] distance_metric=cosine
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS document_chunk_fts USING fts5(text);
+
+-- ── Model registry (Part II Extension A) ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS model_registry (
+    id             TEXT PRIMARY KEY,   -- e.g. "google/gemini-2.5-flash-lite"
+    label          TEXT NOT NULL,
+    input_price    REAL,               -- USD per 1M tokens
+    output_price   REAL,               -- USD per 1M tokens
+    cache_read     REAL,               -- USD per 1M cached tokens
+    context_window INTEGER,
+    tier_hint      TEXT DEFAULT 'standard',  -- cheap | standard | premium
+    enabled        INTEGER DEFAULT 1
+);
+
+-- ── Usage telemetry (Part II Extension C) ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS usage_daily (
+    day           TEXT NOT NULL,   -- YYYY-MM-DD
+    model         TEXT NOT NULL,
+    task          TEXT NOT NULL DEFAULT 'unknown',
+    input_tokens  INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    est_cost_usd  REAL DEFAULT 0,
+    PRIMARY KEY (day, model, task)
+);
 
 -- ── MCP (Phase 6) ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS mcp_call_log (

@@ -6,6 +6,7 @@ timing + auth middleware, locked CORS, routers, and the static mount.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
@@ -18,12 +19,13 @@ from fastapi.staticfiles import StaticFiles
 
 from services import auth, db, http_client, importer, metrics
 # Importing these modules registers their job handlers with the queue.
-from workers import cards, cowriter, email as email_worker, extraction, jobs, research  # noqa: F401
+from workers import cards, cowriter, documents as documents_worker, email as email_worker, extraction, jobs, research  # noqa: F401
 from routers import (
     auth as auth_router,
     chat,
     config as config_router,
     cowriter as cowriter_router,
+    documents as documents_router,
     email as email_router,
     files,
     flashcards,
@@ -49,6 +51,11 @@ async def lifespan(app: FastAPI):
     report = await importer.run_import()
     if report:
         print(f"[importer] migrated JSON -> SQLite: {report}")
+
+    # Pre-warm the numpy KNN cache so the first user request doesn't pay the
+    # cold load (~700ms at 50k atoms). Runs in background — startup isn't delayed.
+    from services import retrieval as _retrieval
+    asyncio.create_task(_retrieval._ensure_knn_cache())
 
     extraction.register_schedule()
     email_worker.register_schedule()
@@ -99,9 +106,9 @@ async def timing_and_auth(request: Request, call_next):
 
 for r in (
     auth_router.router, config_router.router, chat.router, memory.router, notes.router,
-    tasks.router, files.router, research_router.router, skills.router, flashcards.router,
-    cowriter_router.router, email_router.router, mcp_router.router, web.router,
-    search_router.router, metrics_router.router,
+    tasks.router, files.router, documents_router.router, research_router.router,
+    skills.router, flashcards.router, cowriter_router.router, email_router.router,
+    mcp_router.router, web.router, search_router.router, metrics_router.router,
 ):
     app.include_router(r)
 

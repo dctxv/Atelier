@@ -14,7 +14,8 @@ import uuid
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from services import db, files
+from services import db, documents as doc_service, files
+from workers import jobs
 
 router = APIRouter()
 api = APIRouter(prefix="/api")
@@ -29,6 +30,13 @@ async def get_files():
     return {"files": await files.list_files()}
 
 
+_INGEST_MIMES = {
+    "application/pdf", "text/plain", "text/markdown",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+_INGEST_EXTS = {".pdf", ".txt", ".md", ".docx"}
+
+
 @api.post("/files/upload")
 async def upload_file(file: UploadFile = File(...)):
     files.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +47,15 @@ async def upload_file(file: UploadFile = File(...)):
     (files.UPLOADS_DIR / stored_name).write_bytes(content)
     mime = file.content_type or mimetypes.guess_type(safe)[0] or "application/octet-stream"
     entry = await files.create(file.filename or "upload", stored_name, len(content), mime)
+
+    # Kick off document ingest for supported types (PDF, txt, md, docx).
+    import os
+    ext = os.path.splitext(safe)[1].lower()
+    if mime in _INGEST_MIMES or ext in _INGEST_EXTS:
+        doc = await doc_service.create(file.filename or safe, mime, len(content))
+        await jobs.enqueue("ingest_document", {"doc_id": doc["id"], "file_id": entry["id"]})
+        entry["document_id"] = doc["id"]
+
     return {"ok": True, "file": entry}
 
 

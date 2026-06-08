@@ -225,9 +225,10 @@ async def chat_stream(request: Request):
         # if neither branch fires, the toggle is on but this message doesn't
         # benefit from search — reply from model knowledge, no trace emitted.
 
-    # 1. Memory injection (retrieve is a fast local read).
+    # 1. Memory + document injection (retrieve is a fast local read).
     atoms = await retrieval.retrieve(user_text, budget_tokens=MEMORY_BUDGET_TOKENS) if user_text else []
     mem_block = retrieval.format_block(atoms)
+    doc_filenames = retrieval.doc_sources(atoms)  # for source-chip SSE event
     if mem_block:
         messages = _inject(messages, mem_block)
 
@@ -253,7 +254,9 @@ async def chat_stream(request: Request):
             yield f"data: {json.dumps({'atelier_clock': clock_data})}\n\n"
             yield "data: [DONE]\n\n"
             return  # card is the complete answer; no LLM call needed
-        elif web_trace:
+        if doc_filenames:
+            yield f"data: {json.dumps({'atelier_docs': doc_filenames})}\n\n"
+        if web_trace:
             yield f"data: {json.dumps({'atelier_search': web_trace})}\n\n"
         try:
             async with http_client.client().stream(

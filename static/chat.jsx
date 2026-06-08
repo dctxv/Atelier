@@ -129,6 +129,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   const [streamBuf,  setStreamBuf]  = useState('');
   const [streamSearch, setStreamSearch] = useState(null);
   const [streamClock,  setStreamClock]  = useState(null);
+  const [streamDocs,   setStreamDocs]   = useState(null);
   const [thinking,   setThinking]   = useState(false);
   const [composer,   setComposer]   = useState('');
   const [config,     setConfig]     = useState(null);
@@ -239,7 +240,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     setSessions(prev => prev.map(s => s.id===activeId
       ? {...s, messages:updatedMsgs, name:sessionName} : s));
 
-    setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setThinking(true);
+    setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null); setThinking(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -273,6 +274,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
             if (evt.error) { setError(String(evt.error)); break; }
             if (evt.atelier_clock)  { clockData = evt.atelier_clock; setStreamClock(clockData); setThinking(false); continue; }
             if (evt.atelier_search) { searchTrace = evt.atelier_search; setStreamSearch(searchTrace); continue; }
+            if (evt.atelier_docs)   { setStreamDocs(evt.atelier_docs); continue; }
             const delta = evt.choices?.[0]?.delta?.content;
             if (delta) { setThinking(false); accumulated+=delta; setStreamBuf(accumulated); }
           } catch(_) {}
@@ -282,7 +284,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       const aiMsg = { role:'assistant', content:accumulated, model, search:searchTrace, clock:clockData };
       setSessions(prev => prev.map(s => s.id===activeId
         ? {...s, messages:[...updatedMsgs, aiMsg]} : s));
-      setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setThinking(false);
+      setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null); setThinking(false);
     } catch(e) {
       if (e.name!=='AbortError') setError('Stream failed — check your model connection.');
     } finally {
@@ -363,6 +365,18 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
           <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
             {streamClock  && <ClockCard data={streamClock}/>}
             {streamSearch && <WebSearchTrace trace={streamSearch} searching={thinking}/>}
+            {streamDocs && streamDocs.length > 0 && (
+              <div style={{marginBottom:12,display:'flex',flexWrap:'wrap',gap:6}}>
+                {streamDocs.map(fn => (
+                  <span key={fn} style={{fontFamily:'var(--font-m)',fontSize:10.5,
+                    padding:'3px 10px',borderRadius:20,letterSpacing:'.03em',
+                    background:'var(--surface)',border:'1px solid var(--border-2)',
+                    color:'var(--text-3)'}}>
+                    📄 {fn}
+                  </span>
+                ))}
+              </div>
+            )}
             {thinking && !streamSearch && (
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
                 <ModelBadge model={activeModel}/>

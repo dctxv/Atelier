@@ -32,8 +32,10 @@ EMBED_DIM = 256
 
 # A single writer thread => writes are serialized => no lock contention.
 _write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db-writer")
-# A few reader threads; WAL lets them run concurrently with the writer.
-_read_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="db-reader")
+# Eight reader threads — retrieval now fans out to 5 concurrent reads (memory vec,
+# memory FTS, doc vec, doc FTS, pinned); 8 gives headroom without contention on
+# the write pool's connection.
+_read_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="db-reader")
 
 _local = threading.local()
 

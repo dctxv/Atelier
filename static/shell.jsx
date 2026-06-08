@@ -2,12 +2,13 @@
 const { useRef, useEffect, useState } = React;
 
 const NAV = [
-  { id:'chat',     icon:'chat'   },
-  { id:'research', icon:'search' },
-  { id:'memory',   icon:'memory' },
-  { id:'notes',    icon:'notes'  },
-  { id:'tasks',    icon:'tasks'  },
-  { id:'files',    icon:'files'  },
+  { id:'chat',      icon:'chat'   },
+  { id:'research',  icon:'search' },
+  { id:'memory',    icon:'memory' },
+  { id:'notes',     icon:'notes'  },
+  { id:'tasks',     icon:'tasks'  },
+  { id:'documents', icon:'book'   },
+  { id:'files',     icon:'files'  },
 ];
 
 function LeftRail({ active, onNav, theme, onTheme }) {
