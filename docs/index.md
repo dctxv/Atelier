@@ -23,8 +23,8 @@ These docs exist so that when I come back to this in six months, or when I hand 
 | [design-system.md](design-system.md) | Visual direction, typefaces, color tokens, themes, animation |
 | [frontend-architecture.md](frontend-architecture.md) | How the frontend is structured — no build step, JSX loader, local lib serving |
 | [shell-navigation.md](shell-navigation.md) | Left rail, chat tab bar, drag-scroll, theme toggle |
-| [chat-surface.md](chat-surface.md) | Chat UI, SSE streaming, session persistence, model selection, /setup |
-| [setup-flow.md](setup-flow.md) | Welcome modal, API endpoint wizard, first-run experience |
+| [chat-surface.md](chat-surface.md) | Chat UI, SSE streaming, session persistence, model selection, command palette, block rendering |
+| [setup-flow.md](setup-flow.md) | Welcome modal, 4-step API endpoint wizard (incl. background model), first-run experience |
 | [surfaces.md](surfaces.md) | Memory, Notes, and Research surfaces (frontend) |
 | [inline-rendering.md](inline-rendering.md) | Bold text, emoji fix, inline markdown parsing |
 | [repository.md](repository.md) | Git setup, secret protection, start.ps1 |

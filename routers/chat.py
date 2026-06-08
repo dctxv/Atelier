@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from services import config, http_client, retrieval, search, skills, math_eval, weather, stock
+from services import config, http_client, retrieval, search, sessions, skills, math_eval, weather, stock
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -250,6 +250,8 @@ async def chat_stream(request: Request):
             payload[k] = body[k]
 
     session_id = body.get("session_id")  # optional; enables source linkage
+    if session_id and user_text:
+        await sessions.add_message(session_id, "user", user_text, model)
 
     async def generate():
         assistant_chunks: list[str] = []
@@ -287,8 +289,10 @@ async def chat_stream(request: Request):
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         yield "data: [DONE]\n\n"
 
-        # 3. Enqueue background extraction (never blocks the stream).
+        # 3. Persist assistant turn + enqueue background extraction.
         assistant_text = "".join(assistant_chunks).strip()
+        if session_id and assistant_text:
+            await sessions.add_message(session_id, "assistant", assistant_text, model)
         if user_text or assistant_text:
             await jobs.enqueue("extract_memory", {
                 "user_text": user_text, "assistant_text": assistant_text,

@@ -33,7 +33,7 @@ I also thought about skipping the welcome modal entirely and just dropping you i
 
 ---
 
-## Setup modal — 3 steps
+## Setup modal — 4 steps
 
 ### Step 1: Connect your AI
 
@@ -68,17 +68,36 @@ Each row shows the short model name (after the last `/`) in italic serif, and th
 
 **What I considered**: I thought about letting you pick multiple models and switch between them later, with step 2 showing a "set as default" button per model. Decided this was scope creep. You can always change the model in the composer picker. The setup flow should just get you to a working state, not be a full configuration panel.
 
-### Step 3: Ready
+### Step 3: Background model
+
+After choosing a primary model, you're asked to choose a cheaper, faster model for background work — memory extraction, mail categorisation, flashcard generation. These are cheap-work tasks that should never run on the same expensive model as the actual conversation.
+
+The UI is the same searchable model list from step 2 (same endpoint, same model set). There are two ways to proceed:
+
+- **Click a model row** — sets it as `cheap_model` via `PATCH /api/config` and advances to step 4
+- **"Use same model" button** — explicitly sets `cheap_model` to the same model chosen in step 2 (not null — an explicit value)
+
+A ← Back button returns to step 2 if you want to change your primary model.
+
+The `cheap_model` is exposed in `GET /api/config` and read by `services/llm.py` `cheap()`. Before this step existed, `cheap()` would silently fall back to `active_model` because `cheap_model` was never set — so every background task ran on the main model. That was a direct cost leak, invisible because nothing surfaced it.
+
+**What I considered**: I thought about adding a persistent "Background model" setting in a settings panel rather than in the wizard. Decided the wizard is the right place — it's the moment you're thinking about models anyway, and re-running `/setup` reaches it again. A separate settings page would be justified if there were many more settings to expose.
+
+I also considered auto-suggesting a smaller model (e.g. the smallest model in the list by name heuristic). Too clever. The user knows their endpoint — if it's OpenRouter they know which models are fast and cheap. Showing the full list with a filter is better than guessing.
+
+### Step 4: Ready
 
 A check mark, a confirmation message ("Model saved. Ready to chat."), and then automatic dismissal after 1.4 seconds. You land on the chat surface.
 
-The auto-dismiss is intentional — there's nothing to do on step 3. Having a "Start chatting →" button would make you click a button just to close a modal. The brief pause with a success state feels better than just snapping shut.
+The auto-dismiss is intentional — there's nothing to do on step 4. Having a "Start chatting →" button would make you click a button just to close a modal. The brief pause with a success state feels better than just snapping shut.
 
 ---
 
 ## Re-opening setup
 
-After first run, you can get back to the setup modal by typing `/setup` in the chat composer. The modal is functionally identical to the first-run version. The welcome modal does not reappear — that's a one-time thing.
+After first run, you can get back to the setup modal via the command palette — type `/` in the composer, then `/setup` to filter down to the "Set up model / endpoint" command, and press Enter. Or type `/setup search`, `/setup weather`, `/setup stock` to reach the individual provider modals.
+
+The setup modal is functionally identical whether opened fresh or re-opened. Walking through it again replaces the active endpoint and model. The welcome modal does not reappear — that's a one-time thing.
 
 I chose not to add a dedicated "Settings" page for endpoint/model management. The setup flow handles the initial configuration and the model picker in the composer handles day-to-day model switching. A full settings page would be the right call if there were more things to configure (notifications, keyboard shortcuts, etc.), but adding it now for just endpoint management would feel overbuilt.
 

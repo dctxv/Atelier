@@ -150,14 +150,57 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     fetch('/api/config').then(r=>r.json()).then(setConfig).catch(()=>{});
   }, []);
 
-  /* Init session if none */
-  useEffect(() => {
-    if (sessions.length === 0) {
-      const s = newSession(config?.active_model||null);
-      setSessions([s]);
-      setActiveId(s.id);
+  /* Bootstrap: migrate localStorage → backend, then load authoritative list */
+  useEffect(() => { (async () => {
+    // 1. One-time migration of any localStorage sessions into the backend.
+    try {
+      if (!localStorage.getItem('atl_sessions_migrated')) {
+        const existing = await fetch('/api/sessions').then(r=>r.json()).then(d=>d.sessions||[]);
+        const local = loadSessions();
+        if (existing.length === 0 && local.length > 0) {
+          await fetch('/api/sessions/import', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({ sessions: local }),
+          });
+        }
+        localStorage.setItem('atl_sessions_migrated', '1');
+      }
+    } catch {}
+    // 2. Load from backend (authoritative). Fall back to local cache on failure.
+    let list = [];
+    try {
+      list = await fetch('/api/sessions').then(r=>r.json()).then(d=>d.sessions||[]);
+    } catch { list = loadSessions(); }
+    list = list.map(s => ({ ...s, messages: s.messages || [], _loaded: false }));
+    // 3. Seed an empty session if there are none.
+    if (list.length === 0) {
+      try {
+        const s = await fetch('/api/sessions', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ name:'New chat', model: config?.active_model || null }),
+        }).then(r=>r.json()).then(d=>d.session);
+        list = [{ ...s, messages: [], _loaded: true }];
+      } catch {
+        const s = newSession(config?.active_model||null); list = [{...s, _loaded:true}];
+      }
     }
-  }, []);
+    setSessions(list);
+    setActiveId(list[0].id);
+  })(); }, []);
+
+  /* Lazy-load messages when a session is first opened */
+  useEffect(() => { (async () => {
+    if (!activeId) return;
+    const s = sessions.find(x => x.id === activeId);
+    if (!s || s._loaded || (s.messages && s.messages.length)) return;
+    try {
+      const full = await fetch(`/api/sessions/${activeId}`).then(r=>r.json()).then(d=>d.session);
+      setSessions(prev => prev.map(x => x.id===activeId
+        ? { ...x, messages: full?.messages || [], _loaded: true } : x));
+    } catch {
+      setSessions(prev => prev.map(x => x.id===activeId ? { ...x, _loaded: true } : x));
+    }
+  })(); }, [activeId]);
 
   useEffect(() => { saveSessions(sessions); }, [sessions]);
 
@@ -169,13 +212,21 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
 
   function selectSession(id) { if (!streaming) setActiveId(id); }
 
-  function newSessionAction() {
-    const s = newSession(config?.active_model||null);
-    setSessions(prev => [s, ...prev]);
-    setActiveId(s.id);
+  async function newSessionAction() {
+    let s;
+    try {
+      s = await fetch('/api/sessions', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ name:'New chat', model: config?.active_model||null }),
+      }).then(r=>r.json()).then(d=>d.session);
+    } catch { s = newSession(config?.active_model||null); }
+    const entry = { ...s, messages: [], _loaded: true };
+    setSessions(prev => [entry, ...prev]);
+    setActiveId(entry.id);
   }
 
   function deleteSession(id) {
+    fetch(`/api/sessions/${id}`, { method:'DELETE' }).catch(()=>{});
     setSessions(prev => {
       const next = prev.filter(s=>s.id!==id);
       if (activeId===id) {
@@ -197,6 +248,8 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     await fetch('/api/config', { method:'PATCH', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({active_model:model}) }).catch(()=>{});
     setSessions(prev => prev.map(s => s.id===activeId ? {...s, model} : s));
+    fetch(`/api/sessions/${activeId}`, { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ model }) }).catch(()=>{});
   }
 
   const COMMANDS = [
@@ -244,6 +297,11 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     setSessions(prev => prev.map(s => s.id===activeId
       ? {...s, messages:updatedMsgs, name:sessionName} : s));
 
+    if (session?.name === 'New chat') {
+      fetch(`/api/sessions/${activeId}`, { method:'PATCH', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ name: text.slice(0,50) }) }).catch(()=>{});
+    }
+
     setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null); setThinking(true);
 
     const controller = new AbortController();
@@ -255,7 +313,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       const resp = await fetch('/api/chat/stream', {
         method:'POST', signal:controller.signal,
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch }),
+        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch, session_id: activeId }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 

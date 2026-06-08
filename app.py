@@ -35,6 +35,7 @@ from routers import (
     notes,
     research as research_router,
     search as search_router,
+    sessions as sessions_router,
     skills,
     tasks,
     web,
@@ -107,8 +108,9 @@ async def timing_and_auth(request: Request, call_next):
 for r in (
     auth_router.router, config_router.router, chat.router, memory.router, notes.router,
     tasks.router, files.router, documents_router.router, research_router.router,
-    skills.router, flashcards.router, cowriter_router.router, email_router.router,
-    mcp_router.router, web.router, search_router.router, metrics_router.router,
+    sessions_router.router, skills.router, flashcards.router, cowriter_router.router,
+    email_router.router, mcp_router.router, web.router, search_router.router,
+    metrics_router.router,
 ):
     app.include_router(r)
 

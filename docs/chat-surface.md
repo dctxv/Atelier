@@ -83,19 +83,56 @@ While streaming, the send button changes to a stop button (a small filled square
 
 ## Message rendering
 
-AI messages go through `parseAiContent()` before rendering. This splits the text into a lede (opening paragraph) and body (everything after the first double newline). The lede renders in Cormorant Garamond italic at 21px. The body renders in Lora at 16px. If the lede is very long (over 300 chars), it's further split at the first sentence boundary so the lede stays short and punchy.
+AI messages are parsed and rendered through two functions in `components.jsx`: `parseBlocks(raw)` and `renderBlock(block, idx, ...)`. There's no external markdown library — the parser is hand-written and understands exactly the block types the Atelier needs to style correctly.
 
-This was a deliberate design call. Most AI responses have a natural opening — the summary statement before the explanation. By separating it visually, that structure becomes legible. Not every response splits cleanly, but most do.
+### Block parsing — `parseBlocks`
+
+`parseBlocks` processes lines sequentially, classifying each into a typed block:
+
+| Block type | Detection | Renders as |
+|---|---|---|
+| `code` | Triple-backtick fence ` ``` ` | `<pre>` in IBM Plex Mono, `--surface` background, verbatim content |
+| `heading` | `/^(#{1,6})\s+(.+)$/` | Cormorant Garamond, italic for h1–h2, stepping font sizes |
+| `hr` | `---` / `***` / `___` | Thin `--rule` line |
+| `table` | Pipe row + separator row with `-` and `|` | Real `<table>`, mono uppercase headers, Lora cells |
+| `ulist` | `- ` or `* ` prefix (non-whitespace required) | Accent `–` dash + Lora text |
+| `olist` | `1.` / `1)` / `1·` prefix | Accent number + Lora text |
+| `paragraph` | Everything else | Lora body via `renderInline` |
+
+Fenced code is captured verbatim before any other classification — `codeLines.join('\n')` preserves internal newlines. The code block is then rendered with `whiteSpace:'pre'` and is never touched by `renderInline` or KaTeX, so code containing `**text**` or `\(...\)` is never misfired as markup.
+
+### Lede promotion
+
+The first block becomes an italic Cormorant Garamond lede *only if it is a `paragraph`*. If the response opens with a heading, table, list, or code block, there is no lede — the block renders as its own type. This fixed a bug where `# Title` would become a slanted italic "# Title" because the old `parseAiContent` blindly treated the first chunk of text as the lede regardless of content.
+
+### Inline rendering — `renderInline`
+
+Within paragraphs, list items, and table cells, `renderInline` handles three patterns in priority order:
+
+1. `` `code` `` — IBM Plex Mono span with `--surface` background (matched first so bold regex can't misfire inside)
+2. `**bold**` — `<strong>` with `fontWeight:700`
+3. Emoji codepoints — wrapped in `fontStyle:'normal'` so they aren't slanted by the italic context
+
+Code blocks are never passed through `renderInline` — the function isn't called for `code` type blocks.
+
+### KaTeX math
+
+KaTeX is loaded via CDN (`cdn.jsdelivr.net/npm/katex@0.16.8`) and its CSS is in `index.html`. After streaming ends, a `useEffect` inside `AiBlock` calls `renderMathInElement` on the block's DOM node with:
+
+- `\( ... \)` for inline math
+- `\[ ... \]` for display math
+- `ignoredTags: ['script','noscript','style','textarea','pre','code']` — prevents KaTeX from scanning code blocks
+- The `$...$` single-dollar delimiter is explicitly *not* configured — it caused intermittent misfires when `renderInline` fragmented paragraphs into multiple text nodes around bold spans
+
+The model persona prompt mandates `\( \)` and `\[ \]`, so removing `$` has no practical downside.
 
 ### What I considered and didn't build
 
-**Full markdown rendering** — I thought seriously about using a markdown library (marked.js or remark) to render headers, bullet lists, code blocks, bold, italic, links. I didn't for a few reasons. Markdown rendering introduces opinionated HTML that's hard to style to match the Atelier aesthetic. The backend models I use don't always produce clean markdown — sometimes they mix markdown with prose in ways that render weirdly. And importing a markdown library (even minified) is another dependency.
+**A markdown library** — I thought seriously about using marked.js or remark. Decided against it: markdown rendering introduces opinionated HTML that's hard to style to match the Atelier aesthetic, and importing a minified library is another dependency. The hand-written parser handles exactly the block types I need — nothing more.
 
-What I built instead is a minimal inline renderer: `**bold**` becomes `<strong>`, and emoji characters get wrapped in `fontStyle:'normal'` so they don't appear slanted. That handles the 80% case without the complexity.
+**Syntax highlighting** — Code blocks render verbatim in IBM Plex Mono. There's no token-level syntax colouring. Adding it would mean bundling a highlighter (Prism, Highlight.js) or calling a server. Not worth it yet; readable mono is enough.
 
-**Code blocks** — Not implemented. If a response contains a code block with triple backticks, it renders as plain text. This is a known gap. When I add it, I'll wrap it in `<pre>` with IBM Plex Mono and a surface background. But I wanted to ship something that worked rather than stall on syntax highlighting.
-
-**Tables** — Not implemented, same reason.
+**Links** — `[text](url)` renders as plain text. The models I use rarely emit markdown links; when they do, the URL is visible in the surrounding text anyway.
 
 ---
 
@@ -116,17 +153,46 @@ The `◇ no model` state (hollow diamond) is shown when no model is configured. 
 
 ---
 
-## /setup slash command
+## Command palette
 
-Typing `/setup` in the composer and pressing Enter triggers the setup modal instead of sending a message. The detection is a simple string comparison:
+Typing `/` in the composer opens a filterable command palette above it — the same visual language as the model picker dropdown (absolute, opens upward, accent highlight on the active row, IBM Plex Mono hints on the right).
+
+The palette is driven by a `COMMANDS` array defined inside `ChatSurface` so each command closes over the live handler functions:
+
+| Command | Keywords | Action |
+|---|---|---|
+| New conversation | new, chat, session | `newSessionAction()` |
+| Switch model | model, switch, pick | Opens model picker |
+| Web search: on/off | web, search, toggle | Toggles `webSearch` state |
+| Toggle theme | theme, dark, light, mono | Calls `onToggleTheme` from `App` |
+| Set up model / endpoint | setup, model, endpoint, api, connect | Opens setup modal |
+| Configure web search | setup, search, tavily, brave, provider | Opens search setup modal |
+| Configure weather API | setup, weather, openweathermap | Opens weather setup modal |
+| Configure stock API | setup, stock, finnhub, quote | Opens stock setup modal |
+
+Filtering happens against both the `label` and the `keywords` array — `/web` narrows to the web-search toggle; `/setup` shows the four setup commands; `/new` shows "New conversation."
+
+### Keyboard behaviour
+
+- **Arrow keys** — move the highlighted row up/down
+- **Enter** — runs the highlighted command, clears the composer
+- **Esc** — dismisses the palette without running anything (typing more text reopens it)
+- **Any `/text` that matches nothing** — `filteredCommands.length === 0` → `paletteOpen` is false → Enter falls through to `handleSend()` and the message is sent verbatim. A message like `"/etc/hosts is down"` with no matching command is treated as normal chat.
+
+### Why I replaced the hardcoded checks
+
+The old implementation had four exact-string comparisons in `handleSend()`:
 
 ```js
-if (text === '/setup') { setComposer(''); if (onSetup) onSetup(); return; }
+if (text === '/setup') { ... }
+if (text === '/setup search') { ... }
+if (text === '/setup weather') { ... }
+if (text === '/setup stock') { ... }
 ```
 
-It has to be the entire message — just `/setup`, nothing else. I chose this over a slash-command parsing system because I only have one slash command right now. When there are more, I'll build a proper command palette. Until then, a string check is enough.
+These were invisible — there was no way to discover them without knowing they existed. Every time I added a new action I had to remember to add another string check. The palette fixes both: actions are discoverable by typing `/`, and adding a new command is one object in the `COMMANDS` array.
 
-I considered showing a slash command suggestion popup when you type `/` — the way Notion or Slack shows a command menu. Decided against it for now because it's UI complexity for a feature with one command.
+I considered building the palette in `components.jsx` as a shared component. Kept it in `chat.jsx` because it's tightly coupled to the composer state (`composer`, `paletteIndex`, `paletteDismissed`) and the handler functions. Moving it out would mean threading a lot of props or context for no real benefit.
 
 ---
 
