@@ -27,8 +27,13 @@ _NEWS = re.compile(r"\b(news|announce[ds]?|release[ds]?|launch(ed|es)?|outage|"
                    r"summit|protest(s)?|recall|merger|acquisition)\b", re.I)
 # Year/recent-date mentions (this year or explicit recent year).
 _YEAR = re.compile(r"\b(20[2-9]\d)\b")
+# Breaking-specific NOW signals — explicit live/happening language.
+_BREAKING_NOW = re.compile(
+    r"\b(just now|breaking|live|minutes? ago|right now|happening now|"
+    r"as it happens|developing story|breaking news)\b", re.I)
 
 # TTLs (seconds): volatile/news short, stable long.
+TTL_BREAKING = 60         # barely worth caching for breaking stories
 TTL_VOLATILE = 5 * 60
 TTL_NEWS = 15 * 60
 TTL_RECENT = 60 * 60
@@ -42,6 +47,9 @@ def classify(query: str) -> dict:
     newsy = bool(_NEWS.search(q)) or now
     has_year = bool(_YEAR.search(q))
 
+    # Breaking = strong live-NOW signal co-occurring with a news-event verb.
+    is_breaking = bool(_BREAKING_NOW.search(q)) and bool(_NEWS.search(q))
+
     if volatile or now:
         window = "day"
     elif newsy or has_year:
@@ -51,7 +59,8 @@ def classify(query: str) -> dict:
 
     fresh = window != "none"
     is_news = newsy and fresh
-    return {"fresh": fresh, "window": window, "is_news": is_news, "volatile": volatile}
+    return {"fresh": fresh, "window": window, "is_news": is_news,
+            "volatile": volatile, "is_breaking": is_breaking}
 
 
 def recency_param(cls: dict) -> str | None:
@@ -60,6 +69,8 @@ def recency_param(cls: dict) -> str | None:
 
 
 def ttl_for(cls: dict) -> int:
+    if cls.get("is_breaking"):
+        return TTL_BREAKING
     if cls.get("volatile"):
         return TTL_VOLATILE
     if cls.get("is_news"):

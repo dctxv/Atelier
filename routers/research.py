@@ -2,10 +2,16 @@
 
 The frontend reads a flat `raw_report` string and a `session_id`, so we render
 the structured sections into markdown here while keeping the structured fields.
+
+Phase 4 adds GET /research/{id}/stream — an SSE endpoint that replays buffered
+progress events and then tails new ones until the job finishes or disconnects.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from services import config, db
 from services import research as research_repo
@@ -57,6 +63,44 @@ async def start_research(request: Request):
     item = await research_repo.create(query)
     await jobs.enqueue("research", {"research_id": item["id"]})
     return {"ok": True, "id": item["id"], "session_id": item["id"], "status": "running"}
+
+
+@router.get("/research/{research_id}/stream")
+async def stream_research_progress(research_id: str):
+    """SSE stream of progress events for a running research job.
+
+    Events: planning | round | sources_found | synthesizing | section_ready |
+            claim_verified | done | error | heartbeat
+
+    If the job has already finished, emits a single done/error event and closes.
+    Replays all buffered events from the start, so reconnects are safe.
+    """
+    from workers.research import get_store
+
+    # If the job is already finished, emit a synthetic terminal event.
+    item = await research_repo.get(research_id)
+    if item and item.get("status") in ("done", "error"):
+        ev = json.dumps({"phase": item["status"]})
+
+        async def quick():
+            yield f"data: {ev}\n\n"
+
+        return StreamingResponse(
+            quick(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    store = get_store(research_id)
+
+    async def event_gen():
+        async for ev in store.stream():
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(
+        event_gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "Connection": "keep-alive"},
+    )
 
 
 @router.get("/research/{research_id}")

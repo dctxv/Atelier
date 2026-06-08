@@ -352,6 +352,58 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     PRIMARY KEY (day, model, task)
 );
 
+-- ── Deep Research v2 ─────────────────────────────────────────────────────────
+
+-- Companion metadata for research jobs (stats, round count, duration).
+-- Separate table so the schema stays additive — no ALTER on existing rows.
+CREATE TABLE IF NOT EXISTS research_meta (
+    research_id TEXT PRIMARY KEY,
+    meta        TEXT           -- JSON: {"Duration":"42s","Rounds":2,"Claims":18}
+);
+
+-- Claim-level verification layer.
+CREATE TABLE IF NOT EXISTS claim (
+    id            TEXT PRIMARY KEY,
+    research_id   TEXT NOT NULL,
+    text          TEXT NOT NULL,
+    section_idx   INTEGER,
+    confidence    REAL,
+    stance        TEXT,        -- supported | disputed | single_source | unverified
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_claim_research ON claim(research_id);
+
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    id           TEXT PRIMARY KEY,
+    claim_id     TEXT NOT NULL,
+    chunk_id     TEXT,
+    url          TEXT,
+    published_at INTEGER,
+    entail       REAL,         -- entailment strength for this evidence→claim pair
+    polarity     TEXT,         -- supports | refutes | neutral
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_claim ON claim_evidence(claim_id);
+
+-- Entity graph extracted from verified claims.
+CREATE TABLE IF NOT EXISTS entity (
+    id          TEXT PRIMARY KEY,
+    research_id TEXT,
+    name        TEXT NOT NULL,
+    kind        TEXT,          -- concept|metric|substance|condition|person|org
+    created_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS relation (
+    id          TEXT PRIMARY KEY,
+    research_id TEXT,
+    src_entity  TEXT NOT NULL,
+    dst_entity  TEXT NOT NULL,
+    kind        TEXT,          -- affects|increases|decreases|correlates|contradicts
+    claim_id    TEXT,
+    created_at  INTEGER NOT NULL
+);
+
 -- ── MCP (Phase 6) ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS mcp_call_log (
     id         TEXT PRIMARY KEY,
