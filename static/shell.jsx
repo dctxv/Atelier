@@ -9,6 +9,7 @@ const NAV = [
   { id:'tasks',     icon:'tasks'  },
   { id:'documents', icon:'book'   },
   { id:'files',     icon:'files'  },
+  { id:'settings',  icon:'gear'   },
 ];
 
 function LeftRail({ active, onNav, theme, onTheme }) {

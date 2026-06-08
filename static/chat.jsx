@@ -122,7 +122,7 @@ function CommandPalette({ commands, activeIndex, onHover, onRun }) {
   );
 }
 
-function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme }) {
+function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings }) {
   const [sessions,   setSessions]   = useState(() => loadSessions());
   const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
@@ -208,6 +208,10 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     { id:'search',  label:'Configure web search',               hint:'/setup search',  icon:'globe',  keywords:['setup','search','tavily','brave','provider'],        run:() => onSearchSetup && onSearchSetup() },
     { id:'weather', label:'Configure weather API',              hint:'/setup weather', icon:'globe',  keywords:['setup','weather','openweathermap'],                  run:() => onWeatherSetup && onWeatherSetup() },
     { id:'stock',   label:'Configure stock API',                hint:'/setup stock',   icon:'globe',  keywords:['setup','stock','finnhub','quote'],                   run:() => onStockSetup && onStockSetup() },
+    { id:'settings', label:'Open settings',                       hint:'',               icon:'gear',   keywords:['settings','preferences','config','options'],         run:() => onOpenSettings && onOpenSettings() },
+    { id:'setmodel', label:'Set main model',                      hint:'',               icon:'gear',   keywords:['model','main','primary','default'],                  run:() => onOpenSettings && onOpenSettings('models') },
+    { id:'setfast',  label:'Set fast model',                      hint:'',               icon:'gear',   keywords:['fast','cheap','background','quick'],                 run:() => onOpenSettings && onOpenSettings('models') },
+    { id:'persona',  label:'Set system prompt',                   hint:'',               icon:'gear',   keywords:['system','prompt','persona','personality'],           run:() => onOpenSettings && onOpenSettings('persona') },
   ];
 
   const paletteQuery = composer.startsWith('/') ? composer.slice(1).toLowerCase().trim() : null;

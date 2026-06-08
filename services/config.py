@@ -143,4 +143,5 @@ async def public_config() -> dict:
         "active_endpoint_id": await get_setting("active_endpoint_id"),
         "active_model": await get_setting("active_model"),
         "cheap_model": await get_setting("cheap_model"),
+        "system_prompt": await get_setting("system_prompt", ""),
     }

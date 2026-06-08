@@ -6,6 +6,7 @@ const { ResearchSurface }   = window.V2Research;
 const { MemorySurface }     = window.V2Memory;
 const { NotesSurface }      = window.V2Notes;
 const { DocumentsSurface }  = window;
+const { SettingsSurface }   = window;
 
 function Placeholder({ name }) {
   return (
@@ -29,6 +30,7 @@ function App() {
   const [showSearchSetup, setShowSearchSetup] = useState(false);
   const [showWeatherSetup, setShowWeatherSetup] = useState(false);
   const [showStockSetup, setShowStockSetup] = useState(false);
+  const [settingsSection, setSettingsSection] = useState(null);
 
   useEffect(()=>lsSet('atl_surface',surface),[surface]);
   useEffect(()=>{
@@ -47,17 +49,19 @@ function App() {
   function openSearchSetup(){setShowSearchSetup(true);}
   function openWeatherSetup(){setShowWeatherSetup(true);}
   function openStockSetup(){setShowStockSetup(true);}
+  function openSettings(section){setSettingsSection(section||null);setSurface('settings');}
   function handleSetupSaved(){setShowSetup(false);setSurface('chat');}
 
   const toggleTheme=()=>setTheme(t=>t==='natural'?'mono':'natural');
 
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme}/>;
+      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings}/>;
       case 'research':  return <ResearchSurface/>;
       case 'memory':    return <MemorySurface/>;
       case 'notes':     return <NotesSurface/>;
       case 'documents': return <DocumentsSurface/>;
+      case 'settings':  return <SettingsSurface initialSection={settingsSection}/>;
       default:          return <Placeholder name={surface.charAt(0).toUpperCase()+surface.slice(1)}/>;
     }
   };

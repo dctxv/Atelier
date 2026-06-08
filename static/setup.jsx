@@ -62,79 +62,36 @@ function WelcomeModal({ onSetup, onClose }) {
 }
 
 function SetupModal({ onClose, onSaved }) {
-  const [step,      setStep]     = useState(1);
-  const [url,       setUrl]      = useState('');
-  const [apiKey,    setApiKey]   = useState('');
-  const [name,      setName]     = useState('');
-  const [probing,   setProbing]  = useState(false);
-  const [probeErr,  setProbeErr] = useState('');
-  const [models,    setModels]   = useState([]);
-  const [filter,    setFilter]   = useState('');
-  const [saving,    setSaving]   = useState(false);
-  const [chosenModel, setChosenModel] = useState('');
+  const [step, setStep] = useState(1);
+  const [config, setConfig] = useState(null);
 
-  const PRESETS = [
-    { label:'OpenRouter', url:'https://openrouter.ai/api/v1' },
-    { label:'OpenAI',     url:'https://api.openai.com/v1'    },
-    { label:'Ollama',     url:'http://localhost:11434'        },
-    { label:'Anthropic',  url:'https://api.anthropic.com/v1' },
-    { label:'LM Studio',  url:'http://localhost:1234'        },
-  ];
+  const { EndpointSection, ModelSection, PersonaSection } = window.AtelierSections;
 
-  async function handleProbe() {
-    if (!url.trim()) { setProbeErr('Enter an API endpoint URL.'); return; }
-    setProbing(true); setProbeErr('');
+  async function fetchConfig() {
     try {
-      const resp = await fetch('/api/models/probe', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ url:url.trim(), api_key:apiKey.trim() }),
-      });
-      const d = await resp.json();
-      if (!d.ok) { setProbeErr(d.error||'Could not reach that endpoint.'); return; }
-      if (!d.models?.length) { setProbeErr('Connected but no models found.'); return; }
-      setModels(d.models);
-      setStep(2);
-    } catch(e) { setProbeErr('Connection failed — check the URL and network.'); }
-    finally { setProbing(false); }
+      const resp = await fetch('/api/config');
+      const data = await resp.json();
+      setConfig(data);
+    } catch {}
   }
 
-  async function handleSaveModel(model) {
-    setSaving(true);
-    // Add the endpoint
-    const epResp = await fetch('/api/endpoints', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ url:url.trim(), api_key:apiKey.trim(), name:name||url.trim(), type:'cloud' }),
-    }).then(r=>r.json()).catch(()=>null);
+  React.useEffect(() => { fetchConfig(); }, []);
 
-    const epId = epResp?.endpoint?.id;
-
-    // Activate it + set model
-    if (epId) {
-      await fetch(`/api/endpoints/${epId}/activate`, {method:'POST'}).catch(()=>{});
-    }
-    await fetch('/api/config', {
-      method:'PATCH', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ active_model:model }),
-    }).catch(()=>{});
-
-    setChosenModel(model);
-    setFilter('');
-    setSaving(false);
-    setStep(3);
-  }
-
-  async function handleSaveCheap(cheapModel) {
-    setSaving(true);
-    await fetch('/api/config', {
-      method:'PATCH', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ cheap_model: cheapModel }),
-    }).catch(()=>{});
-    setSaving(false);
-    setStep(4);
+  function handleFinish() {
+    setStep(5);
     setTimeout(() => { if (onSaved) onSaved(); onClose(); }, 1400);
   }
 
-  const filtered = filter ? models.filter(m=>m.toLowerCase().includes(filter.toLowerCase())) : models;
+  const STEPS = [
+    { num:1, label:'Add API Endpoint',  subtitle:'Connect your AI' },
+    { num:2, label:'Select Default Model', subtitle:'' },
+    { num:3, label:'Background Model',  subtitle:'Pick a fast model' },
+    { num:4, label:'System Prompt',     subtitle:'Customize persona' },
+    { num:5, label:'Ready',             subtitle:'All set.' },
+  ];
+  const current = STEPS.find(s => s.num === step) || STEPS[0];
+
+  const sectionProps = { mode:'wizard', config, onConfigChange:fetchConfig };
 
   return (
     <Backdrop>
@@ -142,11 +99,11 @@ function SetupModal({ onClose, onSaved }) {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:28}}>
           <div>
             <SectionLabel style={{marginBottom:6}}>
-              {step===1?'Add API Endpoint':step===2?'Select Default Model':step===3?'Background Model':'Ready'}
+              {current.label}
             </SectionLabel>
             <h2 style={{fontFamily:'var(--font-d)',fontSize:26,fontWeight:400,
               fontStyle:'italic',color:'var(--text)',lineHeight:1.1}}>
-              {step===1?'Connect your AI':step===2?`${models.length} models available`:step===3?'Pick a fast model':'All set.'}
+              {step===1?'Connect your AI':step===2?'Choose main model':step===3?'Pick a fast model':step===4?'Customize persona':'All set.'}
             </h2>
           </div>
           <button onClick={onClose} style={{color:'var(--text-3)',padding:4}}>
@@ -154,132 +111,46 @@ function SetupModal({ onClose, onSaved }) {
           </button>
         </div>
 
-        {step===1 && (
-          <>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:20}}>
-              {PRESETS.map(p => (
-                <button key={p.label} onClick={()=>setUrl(p.url)}
-                  style={{padding:'4px 10px',borderRadius:8,cursor:'pointer',
-                    fontFamily:'var(--font-m)',fontSize:10.5,
-                    color:url===p.url?'var(--accent-tx)':'var(--text-3)',
-                    background:url===p.url?'var(--accent-bg)':'transparent',
-                    border:`1px solid ${url===p.url?'var(--accent-bd)':'var(--border-2)'}`,
-                    transition:'all var(--t)'}}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <div style={{display:'flex',flexDirection:'column',gap:12}}>
-              {[
-                {label:'API base URL',      val:url,    set:setUrl,    ph:'https://openrouter.ai/api/v1', type:'text'},
-                {label:'API key (optional)',val:apiKey, set:setApiKey, ph:'sk-…',                        type:'password'},
-                {label:'Name (optional)',   val:name,   set:setName,   ph:'My endpoint',                 type:'text'},
-              ].map(({label,val,set,ph,type}) => (
-                <div key={label}>
-                  <label style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',
-                    letterSpacing:'.1em',textTransform:'uppercase',display:'block',marginBottom:6}}>
-                    {label}
-                  </label>
-                  <input type={type} value={val} onChange={e=>set(e.target.value)}
-                    onKeyDown={e=>e.key==='Enter'&&handleProbe()} placeholder={ph}
-                    style={{width:'100%',padding:'10px 12px',fontFamily:'var(--font-m)',fontSize:13,
-                      color:'var(--text)',background:'var(--thread-bg)',
-                      border:'1px solid var(--border-2)',borderRadius:8}}/>
-                </div>
-              ))}
-            </div>
-            {probeErr && <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',
-              fontStyle:'italic',marginTop:10}}>{probeErr}</p>}
-            <button onClick={handleProbe} disabled={probing} style={{
-              width:'100%',marginTop:20,padding:'12px 0',borderRadius:9,
-              background:'var(--send-bg)',border:'1px solid var(--accent-bd)',
-              fontFamily:'var(--font-b)',fontSize:14,fontStyle:'italic',
-              color:'var(--send-fg)',cursor:probing?'default':'pointer',opacity:probing?0.7:1}}>
-              {probing?'Connecting…':'Connect & fetch models →'}
-            </button>
-          </>
+        {/* Progress dots */}
+        {step < 5 && (
+          <div style={{display:'flex',gap:5,marginBottom:20,justifyContent:'center'}}>
+            {[1,2,3,4].map(s => (
+              <span key={s} style={{width:s===step?18:6,height:6,borderRadius:3,
+                background:s<=step?'var(--accent)':'var(--border-2)',
+                transition:'all var(--t2)'}} />
+            ))}
+          </div>
         )}
 
-        {step===2 && (
+        {step===1 && config && (
+          <EndpointSection {...sectionProps} onAdvance={()=>setStep(2)} />
+        )}
+
+        {step===2 && config && (
           <>
-            <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
-              border:'1px solid var(--border-2)',borderRadius:8,
-              background:'var(--thread-bg)',marginBottom:12}}>
-              <Ico n="search" size={12} color="var(--text-3)"/>
-              <input autoFocus value={filter} onChange={e=>setFilter(e.target.value)}
-                placeholder="Filter models…"
-                style={{flex:1,fontFamily:'var(--font-m)',fontSize:13,color:'var(--text)'}}/>
-            </div>
-            <div style={{maxHeight:280,overflowY:'auto',marginBottom:16}}>
-              {filtered.map((m,i) => {
-                const short = m.split('/').pop().split(':')[0];
-                return (
-                  <button key={i} onClick={()=>handleSaveModel(m)} disabled={saving}
-                    style={{width:'100%',textAlign:'left',padding:'10px 12px',
-                      display:'flex',justifyContent:'space-between',alignItems:'baseline',
-                      borderBottom:'1px solid var(--border)',cursor:'pointer',
-                      background:'transparent',transition:'background var(--t)'}}
-                    onMouseEnter={e=>e.currentTarget.style.background='var(--accent-bg)'}
-                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                    <span style={{fontFamily:'var(--font-b)',fontSize:13.5,
-                      fontStyle:'italic',color:'var(--text)'}}>{short}</span>
-                    <span style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',
-                      maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <ModelSection {...sectionProps} subStep="main" onAdvance={()=>setStep(3)} />
             <button onClick={()=>setStep(1)} style={{fontFamily:'var(--font-m)',fontSize:11,
-              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>← Back</button>
+              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em',marginTop:8}}>← Back</button>
           </>
         )}
 
-        {step===3 && (
+        {step===3 && config && (
           <>
-            <p style={{fontFamily:'var(--font-b)',fontSize:13.5,lineHeight:1.7,
-              color:'var(--text-q)',marginBottom:16}}>
-              Pick a faster, cheaper model for background work — memory extraction, categorization, and flashcard generation. This keeps your main model free for actual answers. Or use the same model.
-            </p>
-            <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
-              border:'1px solid var(--border-2)',borderRadius:8,
-              background:'var(--thread-bg)',marginBottom:12}}>
-              <Ico n="search" size={12} color="var(--text-3)"/>
-              <input autoFocus value={filter} onChange={e=>setFilter(e.target.value)}
-                placeholder="Filter models…"
-                style={{flex:1,fontFamily:'var(--font-m)',fontSize:13,color:'var(--text)'}}/>
-            </div>
-            <div style={{maxHeight:200,overflowY:'auto',marginBottom:12}}>
-              {filtered.map((m,i) => {
-                const short = m.split('/').pop().split(':')[0];
-                return (
-                  <button key={i} onClick={()=>handleSaveCheap(m)} disabled={saving}
-                    style={{width:'100%',textAlign:'left',padding:'10px 12px',
-                      display:'flex',justifyContent:'space-between',alignItems:'baseline',
-                      borderBottom:'1px solid var(--border)',cursor:'pointer',
-                      background:'transparent',transition:'background var(--t)'}}
-                    onMouseEnter={e=>e.currentTarget.style.background='var(--accent-bg)'}
-                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                    <span style={{fontFamily:'var(--font-b)',fontSize:13.5,
-                      fontStyle:'italic',color:'var(--text)'}}>{short}</span>
-                    <span style={{fontFamily:'var(--font-m)',fontSize:9.5,color:'var(--text-3)',
-                      maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <button onClick={()=>handleSaveCheap(chosenModel)} disabled={saving}
-              style={{width:'100%',marginBottom:12,padding:'12px 0',borderRadius:9,
-                background:'transparent',border:'1px solid var(--border-2)',
-                fontFamily:'var(--font-m)',fontSize:11.5,
-                color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>
-              Use same model
-            </button>
+            <ModelSection {...sectionProps} subStep="fast" onAdvance={()=>setStep(4)} />
             <button onClick={()=>setStep(2)} style={{fontFamily:'var(--font-m)',fontSize:11,
-              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em'}}>← Back</button>
+              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em',marginTop:8}}>← Back</button>
           </>
         )}
 
-        {step===4 && (
+        {step===4 && config && (
+          <>
+            <PersonaSection {...sectionProps} onAdvance={handleFinish} />
+            <button onClick={()=>setStep(3)} style={{fontFamily:'var(--font-m)',fontSize:11,
+              color:'var(--text-3)',cursor:'pointer',letterSpacing:'.04em',marginTop:8}}>← Back</button>
+          </>
+        )}
+
+        {step===5 && (
           <div style={{textAlign:'center',padding:'24px 0'}}>
             <div style={{width:40,height:40,borderRadius:'50%',
               background:'var(--accent-bg)',border:'1px solid var(--accent-bd)',

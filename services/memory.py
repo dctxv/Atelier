@@ -7,6 +7,7 @@ without its atom, or an FTS row pointing at a deleted atom.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from . import db, embeddings
@@ -83,6 +84,12 @@ async def add_atom(
         conn.execute("INSERT INTO memory_fts(rowid, text) VALUES(?,?)", (rid, text))
 
     await db.write(op)
+
+    # Warm the numpy KNN cache in the background so the next retrieve() call
+    # doesn't pay the full rebuild cost on the user-facing hot path.
+    from .retrieval import _ensure_knn_cache  # local import avoids circular dep
+    asyncio.create_task(_ensure_knn_cache())
+
     return await get_atom(atom_id)
 
 

@@ -17,7 +17,7 @@ async def get_config():
 async def patch_config(request: Request):
     data = await request.json()
     for key in ("active_endpoint_id", "active_model", "cheap_model",
-                "embedding_endpoint_id", "embedding_model"):
+                "embedding_endpoint_id", "embedding_model", "system_prompt"):
         if key in data:
             await config.set_setting(key, data[key])
     return {"ok": True}

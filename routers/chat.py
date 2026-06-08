@@ -139,6 +139,13 @@ def _inject(messages: list[dict], block: str) -> list[dict]:
     return messages
 
 
+DEFAULT_PERSONA = (
+    "You are The Atelier, a sophisticated AI workspace assistant. "
+    "Provide direct, natural answers. Do not redundantly repeat your conclusions, equations, or exact phrases across paragraphs. "
+    "Use LaTeX formatting like \\( \\) or \\[ \\] for math."
+)
+
+
 @router.post("/chat/stream")
 async def chat_stream(request: Request):
     body = await request.json()
@@ -152,12 +159,8 @@ async def chat_stream(request: Request):
     messages = list(body.get("messages", []))
     user_text = _last_user_text(messages)
 
-    base_persona = (
-        "You are The Atelier, a sophisticated AI workspace assistant. "
-        "Provide direct, natural answers. Do not redundantly repeat your conclusions, equations, or exact phrases across paragraphs. "
-        "Use LaTeX formatting like \\( \\) or \\[ \\] for math."
-    )
-    messages = _inject(messages, base_persona)
+    persona = await config.get_setting("system_prompt") or DEFAULT_PERSONA
+    messages = _inject(messages, persona)
 
     # 0. Web search / clock grounding / math eval.
     #    Time queries: emit atelier_clock card — no text injection, no web call.
