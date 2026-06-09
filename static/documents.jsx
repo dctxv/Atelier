@@ -388,4 +388,4 @@ function DocumentsSurface() {
   );
 }
 
-Object.assign(window, { DocumentsSurface });
+Object.assign(window, { DocumentsSurface, DropZone, DocRow });

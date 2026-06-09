@@ -10,6 +10,31 @@ The chat surface is the core of the app. It's built entirely in `chat.jsx` and c
 
 ---
 
+## Progress log
+
+A timeline of how the chat turn has evolved, newest first. Each entry stays so the history is visible rather than overwritten. The sections further down describe individual pieces in depth.
+
+### Hardening cycle — reliability, honesty, and local power *(latest)*
+
+This round followed the "Chat, Search & Local Tools" plan: make the everyday chat turn more **reliable**, make its answers **honest about where they came from**, and add **local tools that need no model or internet.** In plain terms:
+
+- **The stream is harder to break.** If the model connection stalls mid-answer, the app now actually notices (it used to be unable to tell a stalled stream from a slow one) and shows a "still working…" line, and falls back cleanly if it truly dies. Whatever text already arrived is always saved.
+- **Answers show their sources at a glance.** Under each answer is a row of small **provenance chips** — `∑ computed`, `🌐 3 sources`, `🧠 memory`, `📄 file.pdf` — telling you *what grounded the reply*. If an answer drew on one of your own notes or research reports, that chip is **clickable** and takes you straight to it. One glance tells you whether you're reading a looked-up fact, a calculation, or the model's own knowledge.
+- **Deterministic questions answer instantly, with no model.** Like the clock card before it, the app now answers **math, unit conversions, stock quotes, and weather** with a clean card and *no* trip to the AI — exact, fast, and free. It only does this for "bare" questions (just asking for the value); if the question is part of a bigger ask, the model still answers, with the exact figure handed to it.
+- **More local tools.** Date math ("days until Christmas"), timezone conversions, number bases ("255 in hex"), hashing/encoding, colour conversions, and tip/split — all computed locally, shown as cards.
+- **A new Scratchpad surface.** A notepad where every line is evaluated live and locally — `2 + 2`, `100 km to miles`, `days until christmas`, even variables (`a = 12`, then `b = a * 3`). Nothing leaves your machine for these. Find it in the left rail.
+- **A `/play` games corner.** A small, opt-in delight layer — 2048, a number-guessing game, and a typing test — all running entirely in the browser. Open it from the command palette (`/play`). Never pops up on its own.
+- **Smarter, cleaner search.** Conversational questions are rewritten into proper search queries (so "what's the deal with that vision pro thing" becomes a real search), harder questions fan out into several searches, and if search fails you're *told* ("answering from knowledge") instead of the app silently guessing.
+- **Tidier maths.** Results no longer show as `4.00000000000000` — integers are integers (`4`), decimals are trimmed, and `sqrt(2)` now actually computes.
+
+*Why it matters:* the chat turn is the thing you touch hundreds of times a day. None of this is flashy, but a stream that doesn't lose your answer, sources you can see and click, and instant exact local answers are all *felt* every single day.
+
+### Baseline *(for the record)*
+
+The original chat turn: a single streamed reply from the model, with three special cases bolted on over time — the **clock card** (time questions answered by the server, no model), a **web-search trace** when search ran, and **document chips** when an answered drew on uploaded files. It ran local checks (math, weather, stock, clock) one after another on every message, searched using your exact wording, had no total limit on how much context it stuffed into the prompt, and — as the "Error handling" section below still notes — had no retry or stall recovery. Everything in the cycle above was built on top of that foundation.
+
+---
+
 ## Sessions
 
 Sessions are stored in `localStorage` as `atl_sessions` — a JSON array of objects, capped at 50. Each session looks like:

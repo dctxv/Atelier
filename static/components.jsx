@@ -20,10 +20,18 @@ const IC = {
   more:    "M12 13a1 1 0 100-2 1 1 0 000 2zM12 6a1 1 0 100-2 1 1 0 000 2zM12 20a1 1 0 100-2 1 1 0 000 2z",
   agents:  "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
   check:   "M20 6L9 17l-5-5",
+  copy:    "M8 4H6a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2v-2M8 4h8l4 4v8a2 2 0 01-2 2H8a2 2 0 01-2-2V6a2 2 0 012-2z",
+  link:    "M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71",
   sun:     "M12 7a5 5 0 110 10A5 5 0 0112 7zM12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42",
   moon:    "M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z",
   refresh: "M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 005.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 013.51 15",
-  trash:   "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
+  copy:    "M9 9h10v10H9zM5 15V5h10",
+  link:    "M10 14a4 4 0 005.66 0l3-3a4 4 0 00-5.66-5.66l-1 1M14 10a4 4 0 00-5.66 0l-3 3a4 4 0 005.66 5.66l1-1",
+  play:    "M8 5v14l11-7z",
+  sparkle: "M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z",
+  grid:    "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  trash:    "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
+  projects: "M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4",
   globe:   "M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 010 20M12 2a15 15 0 000 20",
   gear:    "M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1.08-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1.08 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z",
 };
@@ -73,11 +81,11 @@ function TurnDots() {
   );
 }
 
-/* ── Inline renderer: `code`, **bold**, emoji upright ── */
+/* ── Inline renderer: `code`, **bold**, [link](url), emoji upright ── */
 function renderInline(text) {
   if (!text) return text;
-  // Inline code matched first so its contents are never bolded or emoji-processed
-  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|([☀-➿]|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDEFF]|\uD83E[\uDD00-\uDDFF])/g;
+  // Order: inline code, bold, markdown link, emoji
+  const re = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^\)]+)\)|([☀-➿]|\uD83C[\uDF00-\uDFFF]|\uD83D[\uDC00-\uDEFF]|\uD83E[\uDD00-\uDDFF])/g;
   const out = [];
   let k = 0, pos = 0, m;
   while ((m = re.exec(text)) !== null) {
@@ -88,8 +96,12 @@ function renderInline(text) {
         color:'var(--text)', fontStyle:'normal' }}>{m[1]}</span>);
     else if (m[2] !== undefined)
       out.push(<strong key={k++} style={{ fontWeight:700 }}>{m[2]}</strong>);
+    else if (m[3] !== undefined && m[4] !== undefined)
+      out.push(<a key={k++} href={m[4]} target="_blank" rel="noopener noreferrer"
+        style={{ color:'var(--accent-tx)', textDecoration:'underline',
+          textUnderlineOffset:2, fontStyle:'normal' }}>{m[3]}</a>);
     else
-      out.push(<span key={k++} style={{ fontStyle:'normal' }}>{m[3]}</span>);
+      out.push(<span key={k++} style={{ fontStyle:'normal' }}>{m[5]}</span>);
     pos = m.index + m[0].length;
   }
   if (pos < text.length) out.push(text.slice(pos));
@@ -238,15 +250,30 @@ function renderBlock(block, idx, compact, bodyFs, bodyLh) {
           ))}
         </div>
       );
-    case 'code':
+    case 'code': {
+      const [copied, setCopied] = React.useState(false);
+      function copyCode() {
+        navigator.clipboard.writeText(block.text || '').then(() => {
+          setCopied(true); setTimeout(() => setCopied(false), 1800);
+        }).catch(() => {});
+      }
       return (
         <div key={idx} style={{ marginBottom:compact?10:14 }}>
-          {block.lang && (
-            <div style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
-              letterSpacing:'.08em', textTransform:'uppercase', marginBottom:4 }}>
-              {block.lang}
-            </div>
-          )}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+            {block.lang
+              ? <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+                  letterSpacing:'.08em', textTransform:'uppercase' }}>{block.lang}</span>
+              : <span/>}
+            <button onClick={copyCode} style={{
+              fontFamily:'var(--font-m)', fontSize:8.5, color: copied ? 'var(--accent-tx)' : 'var(--text-3)',
+              padding:'2px 7px', border:'1px solid var(--border-2)', borderRadius:6,
+              cursor:'pointer', background:'transparent', display:'flex', alignItems:'center', gap:4,
+              transition:'color var(--t)',
+            }}>
+              <Ico n={copied ? 'check' : 'copy'} size={9} color="currentColor"/>
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
           <pre style={{
             fontFamily:'var(--font-m)', fontSize:12.5, lineHeight:1.65,
             color:'var(--text)', background:'var(--surface)',
@@ -256,6 +283,7 @@ function renderBlock(block, idx, compact, bodyFs, bodyLh) {
           }}>{block.text}</pre>
         </div>
       );
+    }
     case 'table':
       return (
         <div key={idx} style={{ marginBottom:compact?10:14, overflowX:'auto' }}>
@@ -295,11 +323,12 @@ function renderBlock(block, idx, compact, bodyFs, bodyLh) {
 }
 
 /* ── AI block — lede + left accent bar ── */
-function AiBlock({ text, model='', isLast, compact=false, streaming=false }) {
+function AiBlock({ text, model='', isLast, compact=false, streaming=false, timestamp }) {
   const ledeFs = compact ? 16.5 : 21;
   const bodyFs = compact ? 14   : 16;
   const bodyLh = compact ? 1.75 : 1.92;
   const rootRef = React.useRef(null);
+  const [showTs, setShowTs] = React.useState(false);
 
   React.useEffect(() => {
     if (!streaming && window.renderMathInElement && rootRef.current) {
@@ -328,12 +357,25 @@ function AiBlock({ text, model='', isLast, compact=false, streaming=false }) {
   return (
     <div className="fade-up" style={{ flexShrink:0 }}>
       {/* colophon */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: compact?12:18 }}>
+      <div
+        onMouseEnter={() => setShowTs(true)}
+        onMouseLeave={() => setShowTs(false)}
+        style={{ display:'flex', alignItems:'center', gap:10, marginBottom: compact?12:18 }}
+      >
         <ModelBadge model={model}/>
         <span style={{ color:'var(--text-3)', fontSize:10 }}>—</span>
         <span style={{ fontFamily:'var(--font-d)', fontSize:12.5, fontStyle:'italic', color:'var(--text-3)' }}>
           The Atelier
         </span>
+        {timestamp && (
+          <span style={{
+            fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+            marginLeft:'auto', opacity: showTs ? 0.7 : 0,
+            transition:'opacity 0.15s ease', letterSpacing:'.04em',
+          }}>
+            {timestamp}
+          </span>
+        )}
       </div>
       {/* bar + content */}
       <div style={{ display:'flex', gap: compact?14:20 }}>
@@ -369,33 +411,195 @@ function AiBlock({ text, model='', isLast, compact=false, streaming=false }) {
   );
 }
 
+/* ── Card shell — shared visual register for all local-answer cards ── */
+function _CardShell({ children, onAskAbout, label, style:sx }) {
+  return (
+    <div className="fade-up" style={{
+      padding:'16px 20px', marginBottom:14,
+      background:'var(--surface)', border:'1px solid var(--border-2)',
+      borderRadius:12, flexShrink:0, ...sx,
+    }}>
+      {label && (
+        <div style={{ fontFamily:'var(--font-m)', fontSize:8.5, color:'var(--text-3)',
+          letterSpacing:'.1em', textTransform:'uppercase', marginBottom:10 }}>
+          {label}
+        </div>
+      )}
+      {children}
+      {onAskAbout && (
+        <button onClick={onAskAbout} style={{
+          marginTop:12, fontFamily:'var(--font-m)', fontSize:9.5,
+          color:'var(--accent-tx)', background:'var(--accent-bg)',
+          border:'1px solid var(--accent-bd)', borderRadius:8,
+          padding:'3px 10px', cursor:'pointer',
+        }}>ask about this ↗</button>
+      )}
+    </div>
+  );
+}
+
 /* ── Clock card (system-clock answer for time queries) ── */
 function ClockCard({ data }) {
   if (!data) return null;
   return (
-    <div className="fade-up" style={{
-      display:'flex', alignItems:'center', justifyContent:'space-between',
-      padding:'18px 22px', marginBottom:14,
-      background:'var(--surface)', border:'1px solid var(--border-2)',
-      borderRadius:12, gap:20, flexShrink:0,
-    }}>
-      {/* Time */}
-      <span style={{
-        fontFamily:'var(--font-d)', fontSize:38, fontWeight:500,
-        letterSpacing:'-.01em', color:'var(--text)', lineHeight:1, whiteSpace:'nowrap',
-      }}>
-        {data.time}
-      </span>
-      {/* Date + location */}
-      <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
-        <span style={{fontFamily:'var(--font-m)',fontSize:12,color:'var(--text-q)',letterSpacing:'.01em'}}>
-          {data.date}
+    <_CardShell label="Current Time">
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:20 }}>
+        <span style={{
+          fontFamily:'var(--font-m)', fontSize:30, fontWeight:400,
+          letterSpacing:'-.02em', color:'var(--text)', lineHeight:1, whiteSpace:'nowrap',
+        }}>{data.time}</span>
+        <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
+          <span style={{fontFamily:'var(--font-m)',fontSize:12,color:'var(--text-q)',letterSpacing:'.01em'}}>
+            {data.date}
+          </span>
+          <span style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',letterSpacing:'.04em'}}>
+            {data.location}
+          </span>
+        </div>
+      </div>
+    </_CardShell>
+  );
+}
+
+/* ── Math card ── */
+function MathCard({ data, onAskAbout }) {
+  if (!data) return null;
+  return (
+    <_CardShell label="Computed" onAskAbout={onAskAbout}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:16, flexWrap:'wrap' }}>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:26, fontWeight:400,
+          color:'var(--text)', lineHeight:1 }}>{data.result}</span>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)',
+          fontStyle:'italic' }}>{data.expr}</span>
+      </div>
+    </_CardShell>
+  );
+}
+
+/* ── Unit conversion card ── */
+function UnitCard({ data, onAskAbout }) {
+  if (!data) return null;
+  return (
+    <_CardShell label="Unit Conversion" onAskAbout={onAskAbout}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:12 }}>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:22, fontWeight:400,
+          color:'var(--text)', lineHeight:1 }}>{data.result}</span>
+      </div>
+      {data.expr && (
+        <div style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)',
+          marginTop:6 }}>{data.expr}</div>
+      )}
+    </_CardShell>
+  );
+}
+
+/* ── Stock card ── */
+function StockCard({ data, onAskAbout }) {
+  if (!data) return null;
+  const change = data.change || 0;
+  const pct    = data.percent_change || 0;
+  const isUp   = change >= 0;
+  const color  = isUp ? '#4caf7d' : '#e05454';
+  const asOf   = data.as_of ? new Date(data.as_of * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : null;
+  return (
+    <_CardShell label={`Stock · ${data.symbol || data.kind || ''}`} onAskAbout={onAskAbout}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:14 }}>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:27, fontWeight:400,
+          color:'var(--text)', lineHeight:1 }}>
+          ${(data.current_price || 0).toFixed(2)}
         </span>
-        <span style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',letterSpacing:'.04em'}}>
-          {data.location}
+        <span style={{ fontFamily:'var(--font-m)', fontSize:13, color, fontVariantNumeric:'tabular-nums' }}>
+          {isUp ? '+' : ''}{(change).toFixed(2)} ({isUp ? '+' : ''}{(pct).toFixed(2)}%)
         </span>
       </div>
-    </div>
+      <div style={{ display:'flex', gap:20, marginTop:8, flexWrap:'wrap' }}>
+        {data.low_day != null && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
+            Low ${(data.low_day).toFixed(2)}
+          </span>
+        )}
+        {data.high_day != null && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
+            High ${(data.high_day).toFixed(2)}
+          </span>
+        )}
+        {asOf && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)', marginLeft:'auto' }}>
+            as of {asOf}
+          </span>
+        )}
+      </div>
+    </_CardShell>
+  );
+}
+
+/* ── Weather card ── */
+function WeatherCard({ data, onAskAbout }) {
+  if (!data) return null;
+  const temp = data.temperature_celsius != null ? Math.round(data.temperature_celsius) : '—';
+  const feels = data.feels_like_celsius != null ? Math.round(data.feels_like_celsius) : null;
+  return (
+    <_CardShell label={`Weather · ${data.location || ''}`} onAskAbout={onAskAbout}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:12 }}>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:33, fontWeight:400,
+          color:'var(--text)', lineHeight:1 }}>{temp}°C</span>
+        <span style={{ fontFamily:'var(--font-b)', fontSize:15, fontStyle:'italic',
+          color:'var(--text-q)', textTransform:'capitalize' }}>{data.condition}</span>
+      </div>
+      <div style={{ display:'flex', gap:16, marginTop:8, flexWrap:'wrap' }}>
+        {feels != null && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
+            Feels {feels}°C
+          </span>
+        )}
+        {data.humidity_percent != null && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
+            {data.humidity_percent}% humidity
+          </span>
+        )}
+        {data.wind_speed_m_s != null && (
+          <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
+            {data.wind_speed_m_s} m/s wind
+          </span>
+        )}
+      </div>
+    </_CardShell>
+  );
+}
+
+/* ── Generic local-tool card (date, base conv, hash, color, tip) ── */
+function LocalToolCard({ data, onAskAbout }) {
+  if (!data) return null;
+  const LABELS = {
+    date: 'Date', base_conv: 'Base Conversion', hash: 'Hash', encode: 'Encode',
+    color: 'Color', tip_split: 'Tip & Split', timezone_diff: 'Time Conversion',
+  };
+  const label = LABELS[data.kind] || 'Local Compute';
+  return (
+    <_CardShell label={label} onAskAbout={onAskAbout}>
+      <div style={{ display:'flex', alignItems:'baseline', gap:12, flexWrap:'wrap' }}>
+        <span style={{ fontFamily:'var(--font-m)', fontSize:20, fontWeight:400,
+          color:'var(--text)', lineHeight:1.3, wordBreak:'break-all' }}>{data.result}</span>
+      </div>
+      {data.label && (
+        <div style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)', marginTop:5 }}>
+          {data.label}
+        </div>
+      )}
+      {data.detail && (
+        <div style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)', marginTop:3 }}>
+          {data.detail}
+        </div>
+      )}
+      {/* Color swatch */}
+      {data.kind === 'color' && data.hex && (
+        <div style={{
+          marginTop:10, width:40, height:20, borderRadius:6,
+          background: data.hex,
+          border:'1px solid var(--border-2)',
+        }}/>
+      )}
+    </_CardShell>
   );
 }
 
@@ -412,6 +616,42 @@ function _relTime(epoch) {
   if (d < 86400*30) return Math.round(d/86400)+'d ago';
   try { return new Date(epoch*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
   catch { return ''; }
+}
+
+/* ── Provenance chips — the answer's grounding, made legible (§7.3) ── */
+function ProvenanceChips({ prov, onNav }) {
+  if (!prov) return null;
+  const chips = [];
+  if (prov.computed) chips.push({ icon:'sparkle', label:'computed' });
+  if (prov.web)      chips.push({ icon:'globe',  label:`${prov.web} source${prov.web>1?'s':''}` });
+  if (prov.memory)   chips.push({ icon:'memory', label:'memory' });
+  (prov.docs || []).forEach(fn => chips.push({ icon:'files', label:fn }));
+  (prov.sources || []).forEach(s => {
+    if (s.kind === 'note')     chips.push({ icon:'notes',  label:'a note',     nav:'notes' });
+    else if (s.kind === 'research') chips.push({ icon:'search', label:'your research', nav:'research' });
+  });
+  if (!chips.length) return null;
+  return (
+    <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:12 }}>
+      {chips.map((c, i) => {
+        const clickable = c.nav && onNav;
+        return (
+          <button key={i} disabled={!clickable}
+            onClick={clickable ? () => onNav(c.nav) : undefined}
+            title={clickable ? `Grounded in ${c.label} — open` : `Grounded in ${c.label}`}
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px',
+              borderRadius:20, border:'1px solid var(--border-2)', background:'var(--surface)',
+              cursor: clickable ? 'pointer' : 'default', maxWidth:200 }}>
+            <Ico n={c.icon} size={10} color="var(--text-3)"/>
+            <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)',
+              letterSpacing:'.02em', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {c.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function WebSearchTrace({ trace, searching=false }) {
@@ -550,4 +790,8 @@ function EmptyState({ icon='more', title, subtitle }) {
   );
 }
 
-Object.assign(window, { Ico, Pulse, ModelBadge, TurnDots, AiBlock, UserQuery, SectionLabel, Rule, EmptyState, WebSearchTrace, ClockCard });
+Object.assign(window, {
+  Ico, Pulse, ModelBadge, TurnDots, AiBlock, UserQuery, SectionLabel, Rule, EmptyState,
+  WebSearchTrace, ClockCard, MathCard, UnitCard, StockCard, WeatherCard, LocalToolCard,
+  ProvenanceChips,
+});

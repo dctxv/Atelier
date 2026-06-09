@@ -33,16 +33,19 @@
     '/chat.jsx',
     '/memory.jsx',
     '/notes.jsx',
+    '/scratchpad.jsx',
     '/research.jsx',
     '/documents.jsx',
     '/sections.jsx',
     '/settings.jsx',
     '/setup.jsx',
+    '/games.jsx',
+    '/projects.jsx',
     '/app.jsx',
   ];
   function loadNext(i) {
     if (i >= files.length) return;
-    var url = files[i] + '?v=20260610g';
+    var url = files[i] + '?v=20260609f';
     fetch(url)
       .then(function(r) {
         if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + url);

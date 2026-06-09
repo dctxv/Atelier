@@ -122,14 +122,19 @@ function CommandPalette({ commands, activeIndex, onHover, onRun }) {
   );
 }
 
-function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings }) {
+function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings, onNav, onPlay, activeProject, onExitProject }) {
   const [sessions,   setSessions]   = useState(() => loadSessions());
   const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
   const [streamBuf,  setStreamBuf]  = useState('');
   const [streamSearch, setStreamSearch] = useState(null);
   const [streamClock,  setStreamClock]  = useState(null);
+  const [streamCard,   setStreamCard]   = useState(null);  // NEW: local-answer card
   const [streamDocs,   setStreamDocs]   = useState(null);
+  const [streamProv,   setStreamProv]   = useState(null);  // NEW: provenance chips
+  const [streamStatus, setStreamStatus] = useState('thinking'); // NEW: 'thinking'|'searching'|'computing'|'recalling'|'streaming'
+  const [streamSearchDegraded, setStreamSearchDegraded] = useState(false); // NEW
+  const [suggestWeb,   setSuggestWeb]   = useState(false); // NEW: proactive freshness
   const [thinking,   setThinking]   = useState(false);
   const [composer,   setComposer]   = useState('');
   const [config,     setConfig]     = useState(null);
@@ -144,6 +149,29 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   useEffect(() => { try { localStorage.setItem('atl_websearch', webSearch?'1':'0'); } catch {} }, [webSearch]);
   const threadRef = useRef(null);
   const abortRef  = useRef(null);
+  const composerRef = useRef(null);
+
+  /* Global keyboard shortcuts */
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        setComposer('/');
+        setPaletteDismissed(false);
+        setPaletteIndex(0);
+        setTimeout(() => composerRef.current?.focus(), 0);
+      }
+      if ((e.key === 'n' || e.key === 'N') && !streaming) {
+        e.preventDefault();
+        newSessionAction();
+        setTimeout(() => composerRef.current?.focus(), 50);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [streaming]);
 
   /* Load backend config (active model) */
   useEffect(() => {
@@ -265,6 +293,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     { id:'setmodel', label:'Set main model',                      hint:'',               icon:'gear',   keywords:['model','main','primary','default'],                  run:() => onOpenSettings && onOpenSettings('models') },
     { id:'setfast',  label:'Set fast model',                      hint:'',               icon:'gear',   keywords:['fast','cheap','background','quick'],                 run:() => onOpenSettings && onOpenSettings('models') },
     { id:'persona',  label:'Set system prompt',                   hint:'',               icon:'gear',   keywords:['system','prompt','persona','personality'],           run:() => onOpenSettings && onOpenSettings('persona') },
+    { id:'play',     label:'Play a game',                         hint:'/play',          icon:'play',   keywords:['play','game','games','2048','fun','break'],          run:() => onPlay && onPlay() },
   ];
 
   const paletteQuery = composer.startsWith('/') ? composer.slice(1).toLowerCase().trim() : null;
@@ -302,18 +331,23 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
         body:JSON.stringify({ name: text.slice(0,50) }) }).catch(()=>{});
     }
 
-    setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null); setThinking(true);
+    setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null);
+    setStreamCard(null); setStreamStatus('thinking'); setStreamSearchDegraded(false); setSuggestWeb(false);
+    setStreamProv(null);
+    setThinking(true);
 
     const controller = new AbortController();
     abortRef.current = controller;
     let searchTrace = null;
-    let clockData = null;
+    let clockData   = null;
+    let cardData    = null;
+    let provData    = null;
 
     try {
       const resp = await fetch('/api/chat/stream', {
         method:'POST', signal:controller.signal,
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch, session_id: activeId }),
+        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch, session_id: activeId, project_id: activeProject?.id || undefined }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -333,20 +367,76 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
           if (raw==='[DONE]') break;
           try {
             const evt = JSON.parse(raw);
+
+            // ── Typed event envelope (new) ────────────────────────────────
+            if (evt.type) {
+              switch (evt.type) {
+                case 'clock':
+                  clockData = evt.data; setStreamClock(clockData); setThinking(false); break;
+                case 'card':
+                  cardData = evt.data; setStreamCard(cardData); setThinking(false); break;
+                case 'docs':
+                  setStreamDocs(evt.data); break;
+                case 'provenance':
+                  provData = evt.data; setStreamProv(provData); break;
+                case 'search':
+                  if (evt.data.degraded) {
+                    setStreamSearchDegraded(true);
+                  } else {
+                    searchTrace = evt.data; setStreamSearch(searchTrace);
+                  }
+                  break;
+                case 'status':
+                  if (evt.data === 'suggest_web') {
+                    setSuggestWeb(true);
+                  } else if (evt.data === 'searching') {
+                    setStreamStatus('searching'); setThinking(false);
+                  } else if (evt.data === 'computing') {
+                    setStreamStatus('computing'); setThinking(false);
+                  } else if (evt.data === 'recalling') {
+                    setStreamStatus('recalling'); setThinking(false);
+                  } else if (evt.data === 'streaming') {
+                    setStreamStatus('streaming'); setThinking(false);
+                  } else if (evt.data === 'stalled') {
+                    setStreamStatus('stalled');
+                  } else if (evt.data === 'interrupted') {
+                    setStreamStatus('interrupted');
+                  }
+                  break;
+                case 'error':
+                  const code = evt.data?.code || 'unknown';
+                  const msgs_ = {
+                    auth: 'Authentication failed — check your API key.',
+                    provider_5xx: 'Provider error — the model service returned an error.',
+                    stream_timeout: 'Stream timed out. The model may be overloaded.',
+                    no_model: 'No model selected.',
+                  };
+                  setError(msgs_[code] || String(evt.data?.message || 'Stream failed.'));
+                  break;
+              }
+              continue;
+            }
+
+            // ── Legacy event keys (backward compat) ───────────────────────
             if (evt.error) { setError(String(evt.error)); break; }
             if (evt.atelier_clock)  { clockData = evt.atelier_clock; setStreamClock(clockData); setThinking(false); continue; }
             if (evt.atelier_search) { searchTrace = evt.atelier_search; setStreamSearch(searchTrace); continue; }
             if (evt.atelier_docs)   { setStreamDocs(evt.atelier_docs); continue; }
+
+            // ── Token delta ───────────────────────────────────────────────
             const delta = evt.choices?.[0]?.delta?.content;
             if (delta) { setThinking(false); accumulated+=delta; setStreamBuf(accumulated); }
           } catch(_) {}
         }
       }
 
-      const aiMsg = { role:'assistant', content:accumulated, model, search:searchTrace, clock:clockData };
+      const aiMsg = { role:'assistant', content:accumulated, model, search:searchTrace,
+                      clock:clockData, card:cardData, docs:streamDocs, prov:provData };
       setSessions(prev => prev.map(s => s.id===activeId
         ? {...s, messages:[...updatedMsgs, aiMsg]} : s));
-      setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null); setThinking(false);
+      setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null);
+      setStreamCard(null); setStreamStatus('thinking'); setSuggestWeb(false); setThinking(false);
+      setStreamProv(null);
     } catch(e) {
       if (e.name!=='AbortError') setError('Stream failed — check your model connection.');
     } finally {
@@ -373,7 +463,10 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       if (i>0 && msgs[i-1].role==='assistant') renderedMsgs.push({type:'divider',key:`d${i}`});
       renderedMsgs.push({type:'user',key:`u${i}`,text:msg.content});
     } else if (msg.role==='assistant') {
-      renderedMsgs.push({type:'ai',key:`a${i}`,text:msg.content,model:msg.model,search:msg.search,clock:msg.clock,isLast:i===msgs.length-1&&!streaming});
+      renderedMsgs.push({type:'ai',key:`a${i}`,text:msg.content,model:msg.model,
+        search:msg.search,clock:msg.clock,card:msg.card,docs:msg.docs,prov:msg.prov,
+        createdAt:msg.created_at,
+        isLast:i===msgs.length-1&&!streaming});
     }
   }
   const activeModel = session?.model || config?.active_model || '';
@@ -414,20 +507,82 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
               <UserQuery text={item.text}/>
             </div>
           );
-          if (item.type==='ai') return (
-            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
-              {item.clock  && <ClockCard data={item.clock}/>}
-              {item.search && <WebSearchTrace trace={item.search}/>}
-              {item.text && <AiBlock text={item.text} model={item.model} isLast={item.isLast}/>}
-            </div>
-          );
+          if (item.type==='ai') {
+            const card = item.card;
+            const cardKind = card?.kind;
+            const createdAt = item.createdAt;
+            function fmtTime(ts) {
+              if (!ts) return '';
+              try {
+                // ts is epoch seconds from backend
+                const d = new Date(ts * 1000);
+                return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+              } catch { return ''; }
+            }
+            function makeAskAbout(cardData_) {
+              return () => {
+                const payload = JSON.stringify(cardData_, null, 2);
+                setComposer(`Tell me more about this: ${payload.slice(0,120)}`);
+              };
+            }
+            return (
+              <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+                {item.clock  && <ClockCard data={item.clock}/>}
+                {cardKind==='math'    && <MathCard    data={card} onAskAbout={makeAskAbout(card)}/>}
+                {cardKind==='unit'    && <UnitCard    data={card} onAskAbout={makeAskAbout(card)}/>}
+                {cardKind==='stock'   && <StockCard   data={card} onAskAbout={makeAskAbout(card)}/>}
+                {cardKind==='weather' && <WeatherCard data={card} onAskAbout={makeAskAbout(card)}/>}
+                {card && !['math','unit','stock','weather'].includes(cardKind) && (
+                  <LocalToolCard data={card} onAskAbout={makeAskAbout(card)}/>
+                )}
+                {item.search && <WebSearchTrace trace={item.search}/>}
+                {item.prov && <ProvenanceChips prov={item.prov} onNav={onNav}/>}
+                {item.text && <AiBlock text={item.text} model={item.model} isLast={item.isLast}
+                  timestamp={fmtTime(createdAt)}/>}
+              </div>
+            );
+          }
           return null;
         })}
         {streaming && (
           <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            {/* Suggest-web prompt */}
+            {suggestWeb && (
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,
+                padding:'8px 12px',borderRadius:8,border:'1px solid var(--border-2)',
+                background:'var(--surface)',flexShrink:0}}>
+                <Ico n="globe" size={12} color="var(--text-3)"/>
+                <span style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',flex:1}}>
+                  This might need current info
+                </span>
+                <button onClick={()=>{ setSuggestWeb(false); setWebSearch(true); }}
+                  style={{fontFamily:'var(--font-m)',fontSize:9.5,padding:'2px 10px',
+                    borderRadius:8,border:'1px solid var(--accent-bd)',background:'var(--accent-bg)',
+                    color:'var(--accent-tx)',cursor:'pointer'}}>Search the web</button>
+              </div>
+            )}
             {streamClock  && <ClockCard data={streamClock}/>}
-            {streamSearch && <WebSearchTrace trace={streamSearch} searching={thinking}/>}
-            {streamDocs && streamDocs.length > 0 && (
+            {/* Streaming local-answer cards */}
+            {streamCard && streamCard.kind==='math'    && <MathCard    data={streamCard}/>}
+            {streamCard && streamCard.kind==='unit'    && <UnitCard    data={streamCard}/>}
+            {streamCard && streamCard.kind==='stock'   && <StockCard   data={streamCard}/>}
+            {streamCard && streamCard.kind==='weather' && <WeatherCard data={streamCard}/>}
+            {streamCard && !['math','unit','stock','weather'].includes(streamCard.kind) && (
+              <LocalToolCard data={streamCard}/>
+            )}
+            {streamSearch && <WebSearchTrace trace={streamSearch} searching={streamStatus==='searching'}/> }
+            {streamSearchDegraded && (
+              <div style={{marginBottom:10,display:'flex',alignItems:'center',gap:8,
+                padding:'7px 12px',borderRadius:8,border:'1px solid var(--border-2)',
+                background:'var(--surface)',flexShrink:0,opacity:.7}}>
+                <Ico n="globe" size={12} color="var(--text-3)"/>
+                <span style={{fontFamily:'var(--font-m)',fontSize:10.5,color:'var(--text-3)',fontStyle:'italic'}}>
+                  web search unavailable — answering from knowledge
+                </span>
+              </div>
+            )}
+            {streamProv && <ProvenanceChips prov={streamProv} onNav={onNav}/>}
+            {streamDocs && streamDocs.length > 0 && !streamProv && (
               <div style={{marginBottom:12,display:'flex',flexWrap:'wrap',gap:6}}>
                 {streamDocs.map(fn => (
                   <span key={fn} style={{fontFamily:'var(--font-m)',fontSize:10.5,
@@ -439,7 +594,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 ))}
               </div>
             )}
-            {thinking && !streamSearch && (
+            {!streamBuf && !streamSearch && !streamCard && !streamClock && (
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
                 <ModelBadge model={activeModel}/>
                 <span style={{color:'var(--text-3)',fontSize:10}}>—</span>
@@ -448,15 +603,25 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 </span>
               </div>
             )}
-            {thinking && !streamSearch && (
-              <div style={{display:'flex',gap:20}}>
-                <div style={{width:1.5,background:'var(--bar)',borderRadius:1,flexShrink:0}}/>
-                <span style={{fontFamily:'var(--font-d)',fontSize:21,fontStyle:'italic',
-                  color:'var(--text-3)',animation:'blink-thinking 1.1s ease-in-out infinite'}}>
-                  Thinking…
-                </span>
-              </div>
-            )}
+            {/* Specific status lines — shown continuously until the first token */}
+            {!streamBuf && !streamSearch && !streamCard && !streamClock && (() => {
+              const statusLabel = {
+                thinking:   'Thinking…',
+                searching:  'Searching the web…',
+                computing:  'Computing…',
+                recalling:  'Recalling…',
+                stalled:    'Still working…',
+              }[streamStatus] || 'Thinking…';
+              return (
+                <div style={{display:'flex',gap:20}}>
+                  <div style={{width:1.5,background:'var(--bar)',borderRadius:1,flexShrink:0}}/>
+                  <span style={{fontFamily:'var(--font-d)',fontSize:21,fontStyle:'italic',
+                    color:'var(--text-3)',animation:'blink-thinking 1.1s ease-in-out infinite'}}>
+                    {statusLabel}
+                  </span>
+                </div>
+              );
+            })()}
             {streamBuf && (
               <AiBlock text={streamBuf} model={activeModel} streaming={true}/>
             )}
@@ -480,7 +645,24 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
               onRun={runCommand}
             />
           )}
-          <textarea className="ph"
+          {/* Project scope chip */}
+          {activeProject && (
+            <div style={{ marginBottom:8, display:'flex', alignItems:'center', gap:6,
+              padding:'3px 10px 3px 8px', borderRadius:8, background:'var(--accent-bg)',
+              border:'1px solid var(--accent-bd)', width:'fit-content' }}>
+              <Ico n="projects" size={10} color="var(--accent-tx)"/>
+              <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--accent-tx)', letterSpacing:'.02em' }}>
+                {activeProject.name}
+              </span>
+              <button onClick={onExitProject} title="Exit project" style={{
+                width:14, height:14, borderRadius:'50%', display:'grid', placeItems:'center',
+                color:'var(--text-3)', cursor:'pointer', marginLeft:2,
+              }}>
+                <Ico n="close" size={9} color="currentColor"/>
+              </button>
+            </div>
+          )}
+          <textarea className="ph" ref={composerRef}
             placeholder={noModel?'Type /setup to configure a model…':'Continue the conversation…'}
             rows={2} value={composer}
             onChange={e=>{ setComposer(e.target.value); setPaletteDismissed(false); setPaletteIndex(0); }}

@@ -48,7 +48,8 @@ async def extract_memory(payload: dict):
     if not user_text and not assistant_text:
         return
     source_kind = payload.get("source_kind", "chat")
-    source_id = payload.get("source_id")
+    source_id   = payload.get("source_id")
+    project_id  = payload.get("project_id") or None
 
     convo = f"User: {user_text}\nAssistant: {assistant_text}".strip()
     try:
@@ -72,7 +73,7 @@ async def extract_memory(payload: dict):
         await memory.add_atom(
             text=text, type_=item.get("type", "fact"),
             source_kind=source_kind, source_id=source_id,
-            salience=salience, dedup=True,
+            salience=salience, dedup=True, project_id=project_id,
         )
 
 

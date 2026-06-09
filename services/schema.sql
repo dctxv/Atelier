@@ -416,3 +416,20 @@ CREATE TABLE IF NOT EXISTS mcp_call_log (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_log ON mcp_call_log(created_at);
+
+-- ── Projects ─────────────────────────────────────────────────────────────────
+-- NULL project_id = global (existing behavior unchanged).
+-- ALTER TABLE ADD COLUMN is O(1) metadata-only in SQLite; safe on live DBs.
+
+CREATE TABLE IF NOT EXISTS project (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    instructions TEXT,               -- project-scoped system prompt (Tier 0)
+    icon         TEXT DEFAULT 'projects',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+-- NOTE: the project_id columns are added by ALTER TABLE migrations in db.py,
+-- and the indexes that depend on them are created there *after* the ALTERs run
+-- (they cannot live here because executescript runs before the columns exist).

@@ -137,6 +137,35 @@ async def init_db():
 
     def op(conn):
         conn.executescript(sql)
+        # ALTER TABLE ADD COLUMN is idempotent-friendly in SQLite but executescript
+        # does not suppress duplicate-column errors, so we run these migrations
+        # separately inside try/except (no-op if column already exists).
+        _migrations = [
+            "ALTER TABLE document    ADD COLUMN project_id TEXT",
+            "ALTER TABLE memory_atom ADD COLUMN project_id TEXT",
+            "ALTER TABLE session     ADD COLUMN project_id TEXT",
+        ]
+        for stmt in _migrations:
+            try:
+                conn.execute(stmt)
+                conn.commit()
+            except Exception:
+                pass  # Column already exists — safe to ignore
+
+        # Indexes that depend on the freshly-added project_id columns. They must
+        # run AFTER the ALTERs above, so they live here rather than in schema.sql
+        # (executescript runs before these columns exist on pre-projects DBs).
+        _post_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_document_project ON document(project_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_atom_project     ON memory_atom(project_id)",
+            "CREATE INDEX IF NOT EXISTS idx_session_project  ON session(project_id)",
+        ]
+        for stmt in _post_indexes:
+            try:
+                conn.execute(stmt)
+                conn.commit()
+            except Exception:
+                pass
 
     await write(op)
 

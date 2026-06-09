@@ -42,6 +42,8 @@ RECENCY_HALF_LIFE = 30 * 86400
 CHARS_PER_TOKEN = 4
 DOC_MAX_CHUNKS = 6
 DIM = db.EMBED_DIM  # 256
+PROJECT_OVERFETCH = 6  # over-fetch factor before project filter [VALIDATE]
+KNN_MIN_COS = 0.25     # min cosine for a memory atom to count as relevant [VALIDATE]
 
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
@@ -126,20 +128,39 @@ async def _ensure_knn_cache() -> None:
         await _rebuild_knn_cache()
 
 
-async def _numpy_knn(serialized_vec: bytes, k: int) -> list[str]:
-    """Top-k atom IDs by cosine similarity using the in-memory float32 matrix."""
+async def _numpy_knn(serialized_vec: bytes, k: int,
+                     project_id: str | None = None) -> list[str]:
+    """Top-k atom IDs by cosine similarity.
+
+    When project_id is given: over-fetch by PROJECT_OVERFETCH, then filter to
+    atoms in this project OR globally-pinned. This avoids under-return when the
+    global top-k are all from other projects.
+    """
     await _ensure_knn_cache()
     if _knn_mat is None or _knn_mat.shape[0] == 0:
         return []
     q = np.frombuffer(serialized_vec, dtype=np.float32)
+    qn = np.linalg.norm(q)
+    if qn > 0:
+        q = q / qn                                 # normalise so scores are true cosine
     scores = _knn_mat @ q                          # (N,) cosine similarities
-    actual_k = min(k, _knn_mat.shape[0])
-    if actual_k == _knn_mat.shape[0]:
-        top = np.argsort(scores)[::-1]
-    else:
-        top = np.argpartition(scores, -actual_k)[-actual_k:]
-        top = top[np.argsort(scores[top])[::-1]]
-    return [_knn_ids[i] for i in top]
+
+    if project_id is None:
+        actual_k = min(k, _knn_mat.shape[0])
+        if actual_k == _knn_mat.shape[0]:
+            top = np.argsort(scores)[::-1]
+        else:
+            top = np.argpartition(scores, -actual_k)[-actual_k:]
+            top = top[np.argsort(scores[top])[::-1]]
+        # Relevance floor: don't return atoms that are merely "nearest" when none
+        # are actually similar (otherwise every query injects irrelevant memory).
+        return [_knn_ids[i] for i in top if scores[i] >= KNN_MIN_COS]
+
+    # Project-scoped: over-fetch then filter
+    raw_k = min(k * PROJECT_OVERFETCH, _knn_mat.shape[0])
+    top = np.argpartition(scores, -raw_k)[-raw_k:]
+    top = top[np.argsort(scores[top])[::-1]]
+    return [_knn_ids[i] for i in top if scores[i] >= KNN_MIN_COS]  # caller filters to project
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -168,26 +189,50 @@ async def _fts_hits(query: str, k: int) -> list[str]:
     return [r["id"] for r in rows]
 
 
-async def _doc_vector_hits(serialized_vec: bytes, k: int) -> list[str]:
-    rows = await db.fetchall(
-        "SELECT dc.id AS id FROM "
-        "(SELECT rowid, distance FROM document_chunk_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?) v "
-        "JOIN document_chunk dc ON dc.rowid = v.rowid ORDER BY v.distance",
-        (serialized_vec, k),
-    )
+async def _doc_vector_hits(serialized_vec: bytes, k: int,
+                           project_id: str | None = None) -> list[str]:
+    if project_id is not None:
+        # Over-fetch subquery, then filter to this project's documents
+        rows = await db.fetchall(
+            "SELECT dc.id AS id FROM "
+            "(SELECT rowid, distance FROM document_chunk_vec WHERE embedding MATCH ? "
+            " ORDER BY distance LIMIT ?) v "
+            "JOIN document_chunk dc ON dc.rowid = v.rowid "
+            "JOIN document d ON d.id = dc.document_id "
+            "WHERE d.project_id = ? AND d.status = 'ready' "
+            "ORDER BY v.distance LIMIT ?",
+            (serialized_vec, k * PROJECT_OVERFETCH, project_id, k),
+        )
+    else:
+        rows = await db.fetchall(
+            "SELECT dc.id AS id FROM "
+            "(SELECT rowid, distance FROM document_chunk_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?) v "
+            "JOIN document_chunk dc ON dc.rowid = v.rowid ORDER BY v.distance",
+            (serialized_vec, k),
+        )
     return [r["id"] for r in rows]
 
 
-async def _doc_fts_hits(query: str, k: int) -> list[str]:
+async def _doc_fts_hits(query: str, k: int,
+                        project_id: str | None = None) -> list[str]:
     expr = _fts_query(query)
     if not expr:
         return []
-    rows = await db.fetchall(
-        "SELECT dc.id AS id FROM document_chunk_fts f "
-        "JOIN document_chunk dc ON dc.rowid = f.rowid "
-        "WHERE document_chunk_fts MATCH ? ORDER BY rank LIMIT ?",
-        (expr, k),
-    )
+    if project_id is not None:
+        rows = await db.fetchall(
+            "SELECT dc.id AS id FROM document_chunk_fts f "
+            "JOIN document_chunk dc ON dc.rowid = f.rowid "
+            "JOIN document d ON d.id = dc.document_id "
+            "WHERE document_chunk_fts MATCH ? AND d.project_id = ? ORDER BY rank LIMIT ?",
+            (expr, project_id, k),
+        )
+    else:
+        rows = await db.fetchall(
+            "SELECT dc.id AS id FROM document_chunk_fts f "
+            "JOIN document_chunk dc ON dc.rowid = f.rowid "
+            "WHERE document_chunk_fts MATCH ? ORDER BY rank LIMIT ?",
+            (expr, k),
+        )
     return [r["id"] for r in rows]
 
 
@@ -210,7 +255,15 @@ def _recency_boost(created_at: int | None) -> float:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-async def retrieve(query: str, k: int = 12, budget_tokens: int = 700) -> list[dict]:
+async def retrieve(query: str, k: int = 12, budget_tokens: int = 700,
+                   project_id: str | None = None) -> list[dict]:
+    """Hybrid retrieval.
+
+    When project_id is given:
+      - Memory atoms scoped to this project + globally-pinned atoms.
+      - Document chunks scoped to this project's documents only.
+    When project_id is None: global behavior (unchanged).
+    """
     query = (query or "").strip()
     if not query:
         return []
@@ -219,21 +272,39 @@ async def retrieve(query: str, k: int = 12, budget_tokens: int = 700) -> list[di
     vec = await embeddings.embed(query)
     sv = db.serialize_f32(vec)
 
-    # Run all reads concurrently — the ready_doc_ids check is merged into the
-    # gather so there's zero sequential overhead on the hot path.
-    # Doc queries use DOC_MAX_CHUNKS as the limit (we cap there anyway; querying
-    # for k=12 and ranking 12 BM25 results is wasted work).
     doc_k = DOC_MAX_CHUNKS
     (
-        numpy_ids, fts_ids, doc_vec_ids, doc_fts_ids, pinned, ready_rows
+        numpy_ids_raw, fts_ids, doc_vec_ids, doc_fts_ids, pinned, ready_rows
     ) = await asyncio.gather(
-        _numpy_knn(sv, k),
+        _numpy_knn(sv, k, project_id=project_id),
         _fts_hits(query, k),
-        _doc_vector_hits(sv, doc_k),
-        _doc_fts_hits(query, doc_k),
+        _doc_vector_hits(sv, doc_k, project_id=project_id),
+        _doc_fts_hits(query, doc_k, project_id=project_id),
         db.fetchall("SELECT * FROM memory_atom WHERE pinned=1 ORDER BY created_at DESC"),
         db.fetchall("SELECT id FROM document WHERE status='ready'"),
     )
+
+    # Project-scope the memory KNN results (numpy path over-fetched raw)
+    pinned_ids = {p["id"] for p in pinned}
+    if project_id is not None:
+        # Fetch this project's atom IDs for filtering
+        project_atom_rows = await db.fetchall(
+            "SELECT id FROM memory_atom WHERE project_id=?", (project_id,)
+        )
+        project_atom_ids = {r["id"] for r in project_atom_rows}
+        allowed_ids = project_atom_ids | pinned_ids
+        numpy_ids = [aid for aid in numpy_ids_raw if aid in allowed_ids][:k]
+        # Also scope FTS hits
+        fts_ids = [fid for fid in fts_ids if fid in allowed_ids]
+    else:
+        # Global: exclude project-scoped atoms (they shouldn't bleed into global chat)
+        project_only_rows = await db.fetchall(
+            "SELECT id FROM memory_atom WHERE project_id IS NOT NULL AND project_id != ''"
+        )
+        project_only_ids = {r["id"] for r in project_only_rows}
+        numpy_ids = [aid for aid in numpy_ids_raw if aid not in project_only_ids][:k]
+        fts_ids   = [fid for fid in fts_ids if fid not in project_only_ids]
+
     ready_doc_ids = {r["id"] for r in ready_rows}
     has_docs = bool(ready_doc_ids)
     if not has_docs:
@@ -242,7 +313,6 @@ async def retrieve(query: str, k: int = 12, budget_tokens: int = 700) -> list[di
     mem_scores = _rrf([numpy_ids, fts_ids])
     doc_scores = _rrf([doc_vec_ids, doc_fts_ids])
 
-    pinned_ids = {p["id"] for p in pinned}
     mem_candidate_ids = set(mem_scores) | pinned_ids
 
     doc_capped_ids = {
@@ -301,6 +371,8 @@ async def retrieve(query: str, k: int = 12, budget_tokens: int = 700) -> list[di
             "score":       round(doc_scores.get(chunk_id, 0.0), 4),
             "source_type": "document",
             "filename":    row.get("filename"),
+            "char_start":  row.get("char_start"),
+            "char_end":    row.get("char_end"),
         })
 
     ordered = sorted(all_items, key=lambda x: x["score"], reverse=True)

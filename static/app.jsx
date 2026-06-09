@@ -5,6 +5,8 @@ const { ChatSurface }       = window.V2Chat;
 const { ResearchSurface }   = window.V2Research;
 const { MemorySurface }     = window.V2Memory;
 const { NotesSurface }      = window.V2Notes;
+const { ScratchpadSurface } = window.V2Scratchpad;
+const { ProjectsSurface }   = window.V2Projects;
 const { DocumentsSurface }  = window;
 const { SettingsSurface }   = window;
 
@@ -23,13 +25,15 @@ function ls(k,d){try{const v=localStorage.getItem(k);return v===null?d:JSON.pars
 function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
 
 function App() {
-  const [surface,     setSurface]     = useState(()=>ls('atl_surface','chat'));
-  const [theme,       setTheme]       = useState(()=>ls('atl_theme','natural'));
+  const [surface,       setSurface]       = useState(()=>ls('atl_surface','chat'));
+  const [theme,         setTheme]         = useState(()=>ls('atl_theme','natural'));
+  const [activeProject, setActiveProject] = useState(null); // project the user is chatting inside
   const [showWelcome, setShowWelcome] = useState(false);
   const [showSetup,   setShowSetup]   = useState(false);
   const [showSearchSetup, setShowSearchSetup] = useState(false);
   const [showWeatherSetup, setShowWeatherSetup] = useState(false);
   const [showStockSetup, setShowStockSetup] = useState(false);
+  const [showGames, setShowGames] = useState(false);
   const [settingsSection, setSettingsSection] = useState(null);
 
   useEffect(()=>lsSet('atl_surface',surface),[surface]);
@@ -56,10 +60,12 @@ function App() {
 
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings}/>;
+      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings} onNav={setSurface} onPlay={()=>setShowGames(true)} activeProject={activeProject} onExitProject={()=>setActiveProject(null)}/>;
+      case 'projects':  return <ProjectsSurface onOpenChat={proj=>{ setActiveProject(proj); setSurface('chat'); }}/>;
       case 'research':  return <ResearchSurface/>;
       case 'memory':    return <MemorySurface/>;
       case 'notes':     return <NotesSurface/>;
+      case 'scratchpad':return <ScratchpadSurface/>;
       case 'documents': return <DocumentsSurface/>;
       case 'settings':  return <SettingsSurface initialSection={settingsSection}/>;
       default:          return <Placeholder name={surface.charAt(0).toUpperCase()+surface.slice(1)}/>;
@@ -77,6 +83,7 @@ function App() {
       {showSearchSetup && <SearchSetupModal onClose={()=>setShowSearchSetup(false)} onSaved={()=>setShowSearchSetup(false)}/>}
       {showWeatherSetup && <WeatherSetupModal onClose={()=>setShowWeatherSetup(false)} onSaved={()=>setShowWeatherSetup(false)}/>}
       {showStockSetup && <StockSetupModal onClose={()=>setShowStockSetup(false)} onSaved={()=>setShowStockSetup(false)}/>}
+      {showGames && <GamesModal onClose={()=>setShowGames(false)}/>}
     </div>
   );
 }

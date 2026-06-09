@@ -50,6 +50,7 @@ async def add_atom(
     salience: float = 1.0,
     pinned: bool = False,
     dedup: bool = False,
+    project_id: str | None = None,
 ) -> dict:
     text = (text or "").strip()
     if not text:
@@ -76,8 +77,8 @@ async def add_atom(
     def op(conn):
         conn.execute(
             "INSERT INTO memory_atom(id, text, type, salience, source_kind, source_id, "
-            "created_at, last_used_at, pinned) VALUES(?,?,?,?,?,?,?,?,?)",
-            (atom_id, text, type_, salience, source_kind, source_id, ts, ts, int(pinned)),
+            "created_at, last_used_at, pinned, project_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (atom_id, text, type_, salience, source_kind, source_id, ts, ts, int(pinned), project_id),
         )
         rid = conn.execute("SELECT rowid FROM memory_atom WHERE id=?", (atom_id,)).fetchone()[0]
         conn.execute("INSERT INTO memory_vec(rowid, embedding) VALUES(?,?)", (rid, payload))
