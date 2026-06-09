@@ -217,12 +217,12 @@ function TabNav({ tabs, active, onSelect, right, style }) {
 /* ── Split layout helper ── */
 function SplitLayout({ left, right, leftWidth=200 }) {
   return (
-    <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
+    <div style={{ display:'flex', flex:1, minWidth:0, width:'100%', height:'100%', overflow:'hidden' }}>
       <div style={{ width:leftWidth, flexShrink:0, background:'var(--panel-bg)',
         borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {left}
       </div>
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {right}
       </div>
     </div>

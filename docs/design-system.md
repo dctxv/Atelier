@@ -1,6 +1,6 @@
 # Design System
 
-*The visual language of The Atelier v2.*
+*The visual language of Atelier v2.*
 
 ---
 

@@ -1,4 +1,4 @@
-/* ====== v2 Chat surface — The Atelier backend ====== */
+/* ====== v2 Chat surface — Atelier backend ====== */
 const { useState, useRef, useEffect } = React;
 
 /* ── Session persistence (localStorage) ── */
@@ -122,9 +122,62 @@ function CommandPalette({ commands, activeIndex, onHover, onRun }) {
   );
 }
 
-function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings, onNav, onPlay, activeProject, onExitProject }) {
-  const [sessions,   setSessions]   = useState(() => loadSessions());
-  const [activeId,   setActiveId]   = useState(() => { const s=loadSessions(); return s.length?s[0].id:null; });
+/* ── Move-conversation menu (opens above the composer button) ── */
+function MoveMenu({ projectId, onMove, onClose }) {
+  const [projects, setProjects] = useState(null);
+  const ref = useRef(null);
+  useEffect(() => {
+    fetch('/api/projects').then(r=>r.json()).then(d=>setProjects(d.projects||[])).catch(()=>setProjects([]));
+  }, []);
+  useEffect(() => {
+    const fn = e => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener('mousedown', fn);
+    return () => document.removeEventListener('mousedown', fn);
+  }, []);
+  const others = (projects || []).filter(p => p.id !== projectId);
+  const rowStyle = { width:'100%', textAlign:'left', display:'flex', alignItems:'center', gap:9,
+    padding:'9px 14px', fontFamily:'var(--font-b)', fontSize:13, fontStyle:'italic',
+    color:'var(--text-q)', cursor:'pointer', borderBottom:'1px solid var(--border)', background:'transparent' };
+  return (
+    <div ref={ref} style={{ position:'absolute', bottom:'calc(100% + 8px)', left:0, width:260,
+      background:'var(--surface)', border:'1px solid var(--border-2)', borderRadius:10, zIndex:100,
+      overflow:'hidden', boxShadow:'0 8px 32px rgba(0,0,0,.2)' }}>
+      <div style={{ padding:'9px 12px', borderBottom:'1px solid var(--border)',
+        fontFamily:'var(--font-m)', fontSize:9.5, letterSpacing:'.1em', textTransform:'uppercase',
+        color:'var(--text-3)' }}>
+        {projectId ? 'Move conversation' : 'Add to project'}
+      </div>
+      <div style={{ maxHeight:264, overflowY:'auto' }}>
+        {projectId && (
+          <button onClick={()=>onMove(null)} style={rowStyle}>
+            <Ico n="chat" size={13} color="var(--text-3)"/>
+            <span style={{flex:1}}>Move to main chat</span>
+          </button>
+        )}
+        {projects === null && <div style={{padding:14, textAlign:'center'}}><Pulse size={7}/></div>}
+        {projects && others.length === 0 && (
+          <div style={{padding:'12px 14px', fontFamily:'var(--font-m)', fontSize:11,
+            color:'var(--text-3)', fontStyle:'italic'}}>
+            {projectId ? 'No other projects.' : 'No projects yet — create one in Projects.'}
+          </div>
+        )}
+        {others.map(p => (
+          <button key={p.id} onClick={()=>onMove(p.id)} style={rowStyle}>
+            <Ico n="projects" size={13} color="var(--text-3)"/>
+            <span style={{flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{p.name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings, onNav, onPlay, activeProject, onExitProject, projectId, onMoved, openSessionId, onConsumeOpen }) {
+  // projectId set → this chat is embedded inside a project: all session list/
+  // create/seed calls are scoped to it, and the global localStorage cache is
+  // left untouched (project chats live only in the backend).
+  const [sessions,   setSessions]   = useState(() => projectId ? [] : loadSessions());
+  const [activeId,   setActiveId]   = useState(() => { if (projectId) return null; const s=loadSessions(); return s.length?s[0].id:null; });
   const [streaming,  setStreaming]   = useState(false);
   const [streamBuf,  setStreamBuf]  = useState('');
   const [streamSearch, setStreamSearch] = useState(null);
@@ -139,6 +192,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   const [composer,   setComposer]   = useState('');
   const [config,     setConfig]     = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [moveOpen,   setMoveOpen]   = useState(false);
   const [webSearch,  setWebSearch]  = useState(() => {
     try { return localStorage.getItem('atl_websearch') === '1'; } catch { return false; }
   });
@@ -178,34 +232,39 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     fetch('/api/config').then(r=>r.json()).then(setConfig).catch(()=>{});
   }, []);
 
-  /* Bootstrap: migrate localStorage → backend, then load authoritative list */
+  /* Bootstrap: load the authoritative session list (global, or project-scoped). */
   useEffect(() => { (async () => {
     // 1. One-time migration of any localStorage sessions into the backend.
-    try {
-      if (!localStorage.getItem('atl_sessions_migrated')) {
-        const existing = await fetch('/api/sessions').then(r=>r.json()).then(d=>d.sessions||[]);
-        const local = loadSessions();
-        if (existing.length === 0 && local.length > 0) {
-          await fetch('/api/sessions/import', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({ sessions: local }),
-          });
+    //    Global chat only — project chats never live in localStorage.
+    if (!projectId) {
+      try {
+        if (!localStorage.getItem('atl_sessions_migrated')) {
+          const existing = await fetch('/api/sessions').then(r=>r.json()).then(d=>d.sessions||[]);
+          const local = loadSessions();
+          if (existing.length === 0 && local.length > 0) {
+            await fetch('/api/sessions/import', {
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({ sessions: local }),
+            });
+          }
+          localStorage.setItem('atl_sessions_migrated', '1');
         }
-        localStorage.setItem('atl_sessions_migrated', '1');
-      }
-    } catch {}
+      } catch {}
+    }
     // 2. Load from backend (authoritative). Fall back to local cache on failure.
+    const listUrl = projectId ? `/api/sessions?project_id=${encodeURIComponent(projectId)}` : '/api/sessions';
     let list = [];
     try {
-      list = await fetch('/api/sessions').then(r=>r.json()).then(d=>d.sessions||[]);
-    } catch { list = loadSessions(); }
+      list = await fetch(listUrl).then(r=>r.json()).then(d=>d.sessions||[]);
+    } catch { list = projectId ? [] : loadSessions(); }
     list = list.map(s => ({ ...s, messages: s.messages || [], _loaded: false }));
     // 3. Seed an empty session if there are none.
     if (list.length === 0) {
       try {
         const s = await fetch('/api/sessions', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({ name:'New chat', model: config?.active_model || null }),
+          body:JSON.stringify({ name:'New chat', model: config?.active_model || null,
+                                project_id: projectId || undefined }),
         }).then(r=>r.json()).then(d=>d.session);
         list = [{ ...s, messages: [], _loaded: true }];
       } catch {
@@ -213,7 +272,10 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       }
     }
     setSessions(list);
-    setActiveId(list[0].id);
+    // Honor a requested session to open (e.g. after a move), else the newest.
+    const initial = (openSessionId && list.find(s => s.id === openSessionId)) ? openSessionId : list[0].id;
+    setActiveId(initial);
+    if (openSessionId && onConsumeOpen) onConsumeOpen();
   })(); }, []);
 
   /* Lazy-load messages when a session is first opened */
@@ -230,11 +292,11 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     }
   })(); }, [activeId]);
 
-  useEffect(() => { saveSessions(sessions); }, [sessions]);
+  useEffect(() => { if (!projectId) saveSessions(sessions); }, [sessions]);
 
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
-  }, [activeId, sessions, streamBuf]);
+  }, [activeId, sessions, streamBuf, composer]);
 
   const session = sessions.find(s=>s.id===activeId) || sessions[0] || null;
 
@@ -245,7 +307,8 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     try {
       s = await fetch('/api/sessions', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ name:'New chat', model: config?.active_model||null }),
+        body:JSON.stringify({ name:'New chat', model: config?.active_model||null,
+                              project_id: projectId || undefined }),
       }).then(r=>r.json()).then(d=>d.session);
     } catch { s = newSession(config?.active_model||null); }
     const entry = { ...s, messages: [], _loaded: true };
@@ -253,21 +316,41 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     setActiveId(entry.id);
   }
 
-  function deleteSession(id) {
-    fetch(`/api/sessions/${id}`, { method:'DELETE' }).catch(()=>{});
+  /* Remove a session from THIS surface's local list and pick a new active one.
+     Used by both delete and move (a moved chat leaves this scope). */
+  function dropLocalSession(id) {
     setSessions(prev => {
       const next = prev.filter(s=>s.id!==id);
-      if (activeId===id) {
-        const first = next[0];
-        if (first) setActiveId(first.id);
-        else {
-          const s = newSession(config?.active_model||null);
-          setActiveId(s.id);
-          return [s];
-        }
+      if (next.length === 0) {
+        // Project chats must stay backend-scoped, so create through the API.
+        if (projectId) { setTimeout(() => newSessionAction(), 0); if (activeId===id) setActiveId(null); return []; }
+        const s = newSession(config?.active_model||null); setActiveId(s.id); return [s];
       }
-      return next.length ? next : (() => { const s=newSession(config?.active_model||null); setActiveId(s.id); return [s]; })();
+      if (activeId===id) setActiveId(next[0].id);
+      return next;
     });
+  }
+
+  function deleteSession(id) {
+    fetch(`/api/sessions/${id}`, { method:'DELETE' }).catch(()=>{});
+    dropLocalSession(id);
+  }
+
+  /* Move the active conversation to a project (target = project id) or back to
+     the main chat (target = null). It leaves this surface and the parent
+     navigates to its new home. */
+  async function moveTo(target) {
+    const sid = activeId;
+    if (!sid || streaming) return;
+    setMoveOpen(false);
+    try {
+      await fetch(`/api/sessions/${sid}`, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ project_id: target }),
+      });
+    } catch {}
+    dropLocalSession(sid);
+    if (onMoved) onMoved(sid, target);
   }
 
   async function handleModelSelect(model) {
@@ -347,7 +430,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       const resp = await fetch('/api/chat/stream', {
         method:'POST', signal:controller.signal,
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch, session_id: activeId, project_id: activeProject?.id || undefined }),
+        body:JSON.stringify({ model, messages:updatedMsgs, web_search: webSearch, session_id: activeId, project_id: projectId || activeProject?.id || undefined }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
@@ -498,12 +581,12 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
         )}
         {renderedMsgs.map(item => {
           if (item.type==='divider') return (
-            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <div key={item.key} style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
               <TurnDots/>
             </div>
           );
           if (item.type==='user') return (
-            <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <div key={item.key} style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
               <UserQuery text={item.text}/>
             </div>
           );
@@ -526,7 +609,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
               };
             }
             return (
-              <div key={item.key} style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+              <div key={item.key} style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
                 {item.clock  && <ClockCard data={item.clock}/>}
                 {cardKind==='math'    && <MathCard    data={card} onAskAbout={makeAskAbout(card)}/>}
                 {cardKind==='unit'    && <UnitCard    data={card} onAskAbout={makeAskAbout(card)}/>}
@@ -545,7 +628,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
           return null;
         })}
         {streaming && (
-          <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+          <div style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
             {/* Suggest-web prompt */}
             {suggestWeb && (
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,
@@ -599,7 +682,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 <ModelBadge model={activeModel}/>
                 <span style={{color:'var(--text-3)',fontSize:10}}>—</span>
                 <span style={{fontFamily:'var(--font-d)',fontSize:12.5,fontStyle:'italic',color:'var(--text-3)'}}>
-                  The Atelier
+                  Atelier
                 </span>
               </div>
             )}
@@ -628,7 +711,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
           </div>
         )}
         {error && (
-          <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'0 60px'}}>
+          <div style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
             <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>{error}</p>
           </div>
         )}
@@ -636,7 +719,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
 
       {/* Composer */}
       <div style={{flexShrink:0,background:'var(--thread-bg)',borderTop:'1px solid var(--border-2)'}}>
-        <div style={{maxWidth:680,width:'100%',margin:'0 auto',padding:'14px 60px 18px',position:'relative'}}>
+        <div style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'14px 60px 18px',position:'relative'}}>
           {paletteOpen && (
             <CommandPalette
               commands={filteredCommands}
@@ -716,6 +799,31 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
                   color:webSearch?'var(--accent-tx)':'var(--text-3)'}}>Web</span>
               </button>
+
+              {/* Move conversation to / from a project */}
+              <div style={{position:'relative'}}>
+                <button onClick={()=>setMoveOpen(o=>!o)}
+                  title={projectId?'Move this conversation to another project or the main chat'
+                                  :'Add this conversation to a project'}
+                  style={{
+                    display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
+                    border:`1px solid ${moveOpen||projectId?'var(--accent-bd)':'var(--border-2)'}`,
+                    borderRadius:10,
+                    background:moveOpen||projectId?'var(--accent-bg)':'transparent',
+                    cursor:'pointer',transition:'all var(--t)',
+                  }}>
+                  <Ico n="projects" size={11} color={projectId?'var(--accent-tx)':'var(--text-3)'}/>
+                  <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
+                    color:projectId?'var(--accent-tx)':'var(--text-3)'}}>
+                    {projectId?'Move':'Add to project'}
+                  </span>
+                </button>
+                {moveOpen && (
+                  <MoveMenu projectId={projectId}
+                    onClose={()=>setMoveOpen(false)}
+                    onMove={moveTo}/>
+                )}
+              </div>
             </div>
 
             {/* Send / Stop */}

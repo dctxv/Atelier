@@ -32,13 +32,14 @@ def _shape(row: dict) -> dict:
     }
 
 
-async def create(filename: str, mime: str | None, byte_size: int) -> dict:
+async def create(filename: str, mime: str | None, byte_size: int,
+                 project_id: str | None = None) -> dict:
     doc_id = str(uuid.uuid4())
     now = db.now()
     await db.execute(
-        "INSERT INTO document(id, filename, mime, byte_size, status, created_at, updated_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (doc_id, filename, mime, byte_size, "queued", now, now),
+        "INSERT INTO document(id, filename, mime, byte_size, status, project_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (doc_id, filename, mime, byte_size, "queued", project_id, now, now),
     )
     return await get(doc_id)
 

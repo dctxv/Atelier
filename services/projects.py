@@ -75,6 +75,7 @@ def _shape(row: dict) -> dict:
     return {
         "id":           row["id"],
         "name":         row["name"],
+        "description":  row.get("description"),
         "instructions": row.get("instructions"),
         "icon":         row.get("icon", "projects"),
         "created_at":   row["created_at"],
@@ -84,12 +85,14 @@ def _shape(row: dict) -> dict:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
-async def create(name: str, instructions: str | None = None) -> dict:
+async def create(name: str, instructions: str | None = None,
+                 description: str | None = None) -> dict:
     pid = str(uuid.uuid4())
     now = db.now()
+    desc = description.strip()[:280] if isinstance(description, str) and description.strip() else None
     await db.execute(
-        "INSERT INTO project(id, name, instructions, created_at, updated_at) VALUES(?,?,?,?,?)",
-        (pid, name.strip()[:120], instructions, now, now),
+        "INSERT INTO project(id, name, description, instructions, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+        (pid, name.strip()[:120], desc, instructions, now, now),
     )
     return await get(pid)
 
@@ -113,7 +116,8 @@ async def list_all() -> list[dict]:
 
 
 async def update(project_id: str, *, name: str | None = None,
-                 instructions: str | None = None) -> dict | None:
+                 instructions: str | None = None,
+                 description: str | None = None) -> dict | None:
     existing = await db.fetchone("SELECT * FROM project WHERE id=?", (project_id,))
     if not existing:
         return None
@@ -125,10 +129,17 @@ async def update(project_id: str, *, name: str | None = None,
         new_instr = None
     else:
         new_instr = instructions.strip()
+    # Same convention for the description (None = unchanged, "" = clear).
+    if description is None:
+        new_desc = existing.get("description")
+    elif description.strip() == "":
+        new_desc = None
+    else:
+        new_desc = description.strip()[:280]
     now = db.now()
     await db.execute(
-        "UPDATE project SET name=?, instructions=?, updated_at=? WHERE id=?",
-        (new_name, new_instr, now, project_id),
+        "UPDATE project SET name=?, description=?, instructions=?, updated_at=? WHERE id=?",
+        (new_name, new_desc, new_instr, now, project_id),
     )
     return await get(project_id)
 

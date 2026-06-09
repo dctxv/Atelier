@@ -9,15 +9,18 @@ router = APIRouter(prefix="/api")
 
 
 @router.get("/sessions")
-async def list_sessions():
-    return {"sessions": await sessions.list_sessions()}
+async def list_sessions(project_id: str | None = None, scope: str = "global"):
+    """List sessions. ?project_id=<id> for a project's chats; otherwise
+    scope='global' (default) returns unassigned chats, scope='all' returns every chat."""
+    return {"sessions": await sessions.list_sessions(project_id=project_id, scope=scope)}
 
 
 @router.post("/sessions")
 async def create_session(request: Request):
     data = await request.json()
     s = await sessions.create(name=data.get("name", "New chat"),
-                              model=data.get("model"), session_id=data.get("id"))
+                              model=data.get("model"), session_id=data.get("id"),
+                              project_id=data.get("project_id"))
     return {"ok": True, "session": s}
 
 
@@ -32,7 +35,13 @@ async def get_session(session_id: str):
 @router.patch("/sessions/{session_id}")
 async def update_session(session_id: str, request: Request):
     data = await request.json()
-    s = await sessions.update(session_id, name=data.get("name"), model=data.get("model"))
+    kwargs = {"name": data.get("name"), "model": data.get("model")}
+    # Only touch project_id when the key is present, so name/model edits don't
+    # clobber it. Present-and-null = move the chat out to the main (global) tab;
+    # present-and-id = move it into that project.
+    if "project_id" in data:
+        kwargs["project_id"] = data["project_id"]
+    s = await sessions.update(session_id, **kwargs)
     if not s:
         raise HTTPException(404, "Session not found")
     return {"ok": True, "session": s}

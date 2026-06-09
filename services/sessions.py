@@ -16,9 +16,14 @@ import uuid
 
 from . import db
 
+# Sentinel: lets update() tell "field omitted" apart from "explicitly set to NULL"
+# (moving a chat OUT of a project sets project_id to None on purpose).
+_UNSET = object()
+
 
 def _session_row(r: dict) -> dict:
     return {"id": r["id"], "name": r["name"], "model": r["model"],
+            "project_id": r.get("project_id"),
             "created_at": r["created_at"], "updated_at": r["updated_at"]}
 
 
@@ -27,8 +32,29 @@ def _message_row(r: dict) -> dict:
             "model": r["model"], "created_at": r["created_at"]}
 
 
-async def list_sessions(limit: int = 200) -> list[dict]:
-    rows = await db.fetchall("SELECT * FROM session ORDER BY updated_at DESC LIMIT ?", (limit,))
+async def list_sessions(limit: int = 200, project_id: str | None = None,
+                        scope: str = "global") -> list[dict]:
+    """List sessions, newest first.
+
+    project_id set    → only that project's sessions.
+    project_id None   → scope='global' (default) returns unassigned sessions
+                        (project_id IS NULL); scope='all' returns everything.
+
+    The 'global' default keeps the main chat tab free of project conversations
+    without the frontend having to change how it calls /api/sessions.
+    """
+    if project_id is not None:
+        rows = await db.fetchall(
+            "SELECT * FROM session WHERE project_id=? ORDER BY updated_at DESC LIMIT ?",
+            (project_id, limit),
+        )
+    elif scope == "all":
+        rows = await db.fetchall(
+            "SELECT * FROM session ORDER BY updated_at DESC LIMIT ?", (limit,))
+    else:  # 'global'
+        rows = await db.fetchall(
+            "SELECT * FROM session WHERE project_id IS NULL ORDER BY updated_at DESC LIMIT ?",
+            (limit,))
     return [_session_row(r) for r in rows]
 
 
@@ -50,24 +76,27 @@ async def _bare(session_id: str) -> dict | None:
 
 
 async def create(name: str = "New chat", model: str | None = None,
-                 session_id: str | None = None) -> dict:
+                 session_id: str | None = None, project_id: str | None = None) -> dict:
     sid = session_id or str(uuid.uuid4())
     ts = db.now()
     await db.execute(
-        "INSERT OR IGNORE INTO session(id, name, model, created_at, updated_at) VALUES(?,?,?,?,?)",
-        (sid, (name or "New chat").strip()[:120], model, ts, ts),
+        "INSERT OR IGNORE INTO session(id, name, model, project_id, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (sid, (name or "New chat").strip()[:120], model, project_id, ts, ts),
     )
     return await _bare(sid)
 
 
-async def update(session_id: str, *, name=None, model=None) -> dict | None:
+async def update(session_id: str, *, name=None, model=None, project_id=_UNSET) -> dict | None:
     existing = await db.fetchone("SELECT * FROM session WHERE id=?", (session_id,))
     if not existing:
         return None
+    new_project = existing.get("project_id") if project_id is _UNSET else project_id
     await db.execute(
-        "UPDATE session SET name=?, model=?, updated_at=? WHERE id=?",
+        "UPDATE session SET name=?, model=?, project_id=?, updated_at=? WHERE id=?",
         ((name.strip()[:120] if isinstance(name, str) else existing["name"]),
-         model if model is not None else existing["model"], db.now(), session_id),
+         model if model is not None else existing["model"],
+         new_project, db.now(), session_id),
     )
     return await _bare(session_id)
 

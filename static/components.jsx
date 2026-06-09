@@ -365,7 +365,7 @@ function AiBlock({ text, model='', isLast, compact=false, streaming=false, times
         <ModelBadge model={model}/>
         <span style={{ color:'var(--text-3)', fontSize:10 }}>—</span>
         <span style={{ fontFamily:'var(--font-d)', fontSize:12.5, fontStyle:'italic', color:'var(--text-3)' }}>
-          The Atelier
+          Atelier
         </span>
         {timestamp && (
           <span style={{

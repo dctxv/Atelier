@@ -1,4 +1,4 @@
-/* ====== Welcome & Setup modals — The Atelier backend ====== */
+/* ====== Welcome & Setup modals — Atelier backend ====== */
 const { useState } = React;
 
 function Backdrop({ children }) {
@@ -34,7 +34,7 @@ function WelcomeModal({ onSetup, onClose }) {
         </div>
         <h1 style={{fontFamily:'var(--font-d)',fontSize:32,fontWeight:400,
           color:'var(--text)',textAlign:'center',lineHeight:1.1,marginBottom:12}}>
-          Welcome to The Atelier
+          Welcome to Atelier
         </h1>
         <p style={{fontFamily:'var(--font-b)',fontSize:14.5,lineHeight:1.75,
           color:'var(--text-q)',textAlign:'center',marginBottom:32}}>

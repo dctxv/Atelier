@@ -9,7 +9,7 @@
 
 ### Part I — Documents + RAG (Retrieval-Augmented Generation)
 
-Users can now upload PDFs, Word documents, and text files. The Atelier automatically:
+Users can now upload PDFs, Word documents, and text files. Atelier automatically:
 
 1. **Extracts** text (PDF via pypdf, Word via python-docx, text files directly)
 2. **Chunks** into ~1,000-character overlapping pieces (consistent with research chunks for unified ranking)

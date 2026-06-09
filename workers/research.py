@@ -50,6 +50,23 @@ CORROB_MAX_CHECKS = 4       # cap extra NLI calls per claim during corroboration
 POOL_PER_DOMAIN   = 3       # cap chunks per domain in the evidence pool (diversity)
 MEMORY_BUDGET     = 400     # token budget for personal context injection
 
+# ── Depth presets ──────────────────────────────────────────────────────────────
+# Scale breadth/depth/verification by the user's chosen effort. "medium" is the
+# historical default (mirrors the constants above), so existing behavior is
+# unchanged when no depth is supplied.
+DEPTH_PRESETS = {
+    "light":   {"max_rounds": 1, "min_rounds": 1, "results_per_subq": 4,
+                "synth_chunks": 12, "max_subq": 3, "max_total_subq": 4,  "corrob_checks": 0},
+    "medium":  {"max_rounds": 3, "min_rounds": 2, "results_per_subq": 6,
+                "synth_chunks": 24, "max_subq": 5, "max_total_subq": 15, "corrob_checks": CORROB_MAX_CHECKS},
+    "intense": {"max_rounds": 5, "min_rounds": 3, "results_per_subq": 8,
+                "synth_chunks": 36, "max_subq": 6, "max_total_subq": 24, "corrob_checks": 6},
+}
+
+
+def _depth_cfg(depth: str | None) -> dict:
+    return DEPTH_PRESETS.get((depth or "medium").lower(), DEPTH_PRESETS["medium"])
+
 
 # ── In-memory progress store (Phase 4) ────────────────────────────────────────
 
@@ -118,19 +135,19 @@ async def _get_context(query: str) -> str:
 
 # ── Phase 1: Planning ──────────────────────────────────────────────────────────
 
-async def _plan(query: str, context: str) -> list[str]:
+async def _plan(query: str, context: str, max_subq: int = MAX_SUBQUESTIONS) -> list[str]:
     ctx = f"\n\nRelevant user context:\n{context}" if context else ""
     try:
         raw = await llm.cheap(
             [{"role": "system", "content":
-              "Decompose the research topic into at most 5 focused sub-questions. "
+              f"Decompose the research topic into at most {max_subq} focused sub-questions. "
               "Return ONLY a JSON array of strings."},
              {"role": "user", "content": f"{query}{ctx}"}],
             temperature=0.2, max_tokens=300, task="research_plan",
         )
         raw = _strip_fences(raw)
         arr = json.loads(raw[raw.find("["): raw.rfind("]") + 1])
-        subqs = [s.strip() for s in arr if isinstance(s, str) and s.strip()][:MAX_SUBQUESTIONS]
+        subqs = [s.strip() for s in arr if isinstance(s, str) and s.strip()][:max_subq]
         if subqs:
             return subqs
     except Exception:
@@ -144,10 +161,11 @@ def _chunk_text(text: str) -> list[str]:
     return [text[i:i + CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)][:CHUNKS_PER_PAGE]
 
 
-async def _sub_agent(research_id: str, subq: str) -> list[dict]:
+async def _sub_agent(research_id: str, subq: str,
+                     results_per_subq: int = RESULTS_PER_SUBQ) -> list[dict]:
     """Search one sub-question (recency-aware via pipeline), chunk + embed + persist."""
-    resp = await search.search(subq, max_results=RESULTS_PER_SUBQ,
-                               top_k=RESULTS_PER_SUBQ, want_content=True)
+    resp = await search.search(subq, max_results=results_per_subq,
+                               top_k=results_per_subq, want_content=True)
     out: list[dict] = []
     for r in resp.results:
         url, title = r.url, r.title
@@ -305,6 +323,7 @@ async def _verify_claim(
     claim_text: str,
     chunk_indices: list[int],
     chunks: list[dict],
+    corrob_max_checks: int = CORROB_MAX_CHECKS,
 ) -> tuple[float, str, list[dict]]:
     """Return (confidence, stance, evidence_rows) for one claim.
 
@@ -366,7 +385,7 @@ async def _verify_claim(
 
         checks = 0
         for cos, c, dom in cands:
-            if len(domains) >= 2 or checks >= CORROB_MAX_CHECKS:
+            if len(domains) >= 2 or checks >= corrob_max_checks:
                 break
             if dom in domains:
                 continue
@@ -464,6 +483,14 @@ async def run_research(payload: dict):
     if not entry:
         return
     query = entry["query"]
+    depth = _depth_cfg(payload.get("depth"))
+    max_rounds       = depth["max_rounds"]
+    min_rounds       = depth["min_rounds"]
+    results_per_subq = depth["results_per_subq"]
+    synth_chunks     = depth["synth_chunks"]
+    max_subq         = depth["max_subq"]
+    max_total_subq   = depth["max_total_subq"]
+    corrob_checks    = depth["corrob_checks"]
     start_ts = time.time()
     store = get_store(research_id)
 
@@ -479,7 +506,7 @@ async def run_research(payload: dict):
         await push("planning")
 
         # [1] Initial sub-questions
-        subqs = await _plan(query, context)
+        subqs = await _plan(query, context, max_subq)
         asked: set[str] = set(subqs)
         all_chunks: list[dict] = []
         examined_urls: set[str] = set()
@@ -488,39 +515,44 @@ async def run_research(payload: dict):
 
         await push("round", round=1, sub_questions=subqs)
 
-        for round_num in range(1, MAX_ROUNDS + 1):
+        for round_num in range(1, max_rounds + 1):
             if not subqs:
                 break
             rounds_completed = round_num
 
             # [2+3] Parallel search + ingest
-            gathered = await asyncio.gather(*[_sub_agent(research_id, sq) for sq in subqs])
+            gathered = await asyncio.gather(
+                *[_sub_agent(research_id, sq, results_per_subq) for sq in subqs])
             all_chunks.extend(c for sub in gathered for c in sub)
             examined_urls.update(c["url"] for c in all_chunks if c.get("url"))
             # Honest counts: distinct sources vs. raw passages (3 passages/page).
             await push("sources_found", count=len(examined_urls),
                        passages=len(all_chunks), round=round_num)
 
-            # [4] Gap check
-            gap = await _gap_check(query, all_chunks, asked)
-            remaining = max(0, MAX_TOTAL_SUBQ - total_subq)
-            new_qs = gap.get("new_sub_questions", [])[:remaining]
-
-            # Stop only when out of questions/budget, at MAX_ROUNDS, or coverage is
-            # met AND we've already done the minimum depth. The MIN_ROUNDS floor is
-            # what stops a lazy gap-check from ending the whole job after one round.
-            hit_target = gap["coverage"] >= COVERAGE_TARGET and round_num >= MIN_ROUNDS
-            if not new_qs or round_num == MAX_ROUNDS or hit_target:
+            # Last round for this depth — no point doing a gap check we won't use.
+            if round_num >= max_rounds:
                 break
 
-            subqs = new_qs[:MAX_SUBQUESTIONS]
+            # [4] Gap check
+            gap = await _gap_check(query, all_chunks, asked)
+            remaining = max(0, max_total_subq - total_subq)
+            new_qs = gap.get("new_sub_questions", [])[:remaining]
+
+            # Stop when out of questions/budget, or coverage is met AND we've done
+            # the minimum depth. The min_rounds floor stops a lazy gap-check from
+            # ending the whole job after one round.
+            hit_target = gap["coverage"] >= COVERAGE_TARGET and round_num >= min_rounds
+            if not new_qs or hit_target:
+                break
+
+            subqs = new_qs[:max_subq]
             asked.update(subqs)
             total_subq += len(subqs)
             await push("round", round=round_num + 1, sub_questions=subqs)
 
         # [5] Rank top chunks
         query_vec = await embeddings.embed(query)
-        top = _top_chunks(all_chunks, query_vec, SYNTH_CHUNKS)
+        top = _top_chunks(all_chunks, query_vec, synth_chunks)
         if not top:
             await research_repo.mark_error(research_id, "No web sources could be fetched.")
             await push("error", message="No web sources could be fetched.")
@@ -558,7 +590,7 @@ async def run_research(payload: dict):
                 if not claim_text:
                     continue
                 confidence, stance, evidence_rows = await _verify_claim(
-                    claim_text, raw_claim.get("evidence_chunks", []), top
+                    claim_text, raw_claim.get("evidence_chunks", []), top, corrob_checks
                 )
                 await research_repo.add_claim(
                     research_id, claim_text, sec_idx, confidence, stance, evidence_rows

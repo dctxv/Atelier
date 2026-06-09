@@ -1,4 +1,4 @@
--- The Atelier — v1 baseline schema.
+-- Atelier — v1 baseline schema.
 -- UUID text ids; integer-epoch (seconds) timestamps throughout.
 -- This file is idempotent: every statement is IF NOT EXISTS so it doubles
 -- as the migration runner on startup.
@@ -424,6 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_log ON mcp_call_log(created_at);
 CREATE TABLE IF NOT EXISTS project (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
+    description  TEXT,               -- short blurb; only datum visible to global chat
     instructions TEXT,               -- project-scoped system prompt (Tier 0)
     icon         TEXT DEFAULT 'projects',
     created_at   INTEGER NOT NULL,

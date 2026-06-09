@@ -84,7 +84,7 @@ On initial load, `index.html` has an inline script that reads the saved theme an
 
 ### Why only two themes?
 
-I thought about a full palette picker or more than two themes. Decided against it for two reasons. First, maintaining design token consistency across more than two themes is a lot of work and things drift. Second, having infinite customization options is a different product philosophy than what I want here — I want The Atelier to have an identity, not be a blank canvas. Natural and mono are the two moods I actually use.
+I thought about a full palette picker or more than two themes. Decided against it for two reasons. First, maintaining design token consistency across more than two themes is a lot of work and things drift. Second, having infinite customization options is a different product philosophy than what I want here — I want Atelier to have an identity, not be a blank canvas. Natural and mono are the two moods I actually use.
 
 ---
 

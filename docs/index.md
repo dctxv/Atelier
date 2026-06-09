@@ -1,10 +1,10 @@
-# The Atelier — Documentation
+# Atelier — Documentation
 
 *Written by Clay. Last updated June 2026.*
 
 ---
 
-The Atelier is my personal AI workspace. The idea is simple: I want to talk to any model I already have access to — OpenRouter, Ollama, a local LM Studio instance, whatever — without going through someone else's product UI. I want the experience to feel like mine. The name comes from the French for a craftsman's workshop or artist's studio. That's the tone I was going for. Quiet, deliberate, yours.
+Atelier is my personal AI workspace. The idea is simple: I want to talk to any model I already have access to — OpenRouter, Ollama, a local LM Studio instance, whatever — without going through someone else's product UI. I want the experience to feel like mine. The name comes from the French for a craftsman's workshop or artist's studio. That's the tone I was going for. Quiet, deliberate, yours.
 
 This isn't meant to be shared software in the polished sense. It runs locally. But I do care a lot about how it looks and feels, which is why a meaningful amount of thought went into things that a utility app would never bother with — typefaces, rhythm, the way a response fades up.
 
@@ -49,4 +49,4 @@ These docs exist so that when I come back to this in six months, or when I hand 
 
 ## What this is (and isn't)
 
-The Atelier is a local tool I run for myself, on `127.0.0.1:8000`. It is not a production SaaS, it doesn't sync to the cloud, and it stays single-user by default. What changed in v1 is the *inside*: it now has a real backend that can carry weight — a shared memory, fast retrieval at scale, background work — without ever sacrificing the thing I care about, which is that nothing gets between me and a streaming reply. Keeping the surface simple while the core got serious was the whole design tension, and the [hot-path rules](shared-core.md#the-hot-path-rules) are how I held the line.
+Atelier is a local tool I run for myself, on `127.0.0.1:8000`. It is not a production SaaS, it doesn't sync to the cloud, and it stays single-user by default. What changed in v1 is the *inside*: it now has a real backend that can carry weight — a shared memory, fast retrieval at scale, background work — without ever sacrificing the thing I care about, which is that nothing gets between me and a streaming reply. Keeping the surface simple while the core got serious was the whole design tension, and the [hot-path rules](shared-core.md#the-hot-path-rules) are how I held the line.

@@ -1,4 +1,4 @@
-"""The Atelier web-search layer.
+"""Atelier web-search layer.
 
 Public API:
   search(query, ...) -> SearchResponse   # the one entry point (sync fast path

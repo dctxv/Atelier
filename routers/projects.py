@@ -15,12 +15,14 @@
 """
 from __future__ import annotations
 
-import io
+import mimetypes
+import re
+import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from services import db, documents, projects
+from services import db, documents, files as files_service, projects
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -31,11 +33,13 @@ router = APIRouter(prefix="/api")
 class CreateProject(BaseModel):
     name: str
     instructions: str | None = None
+    description: str | None = None
 
 
 class PatchProject(BaseModel):
     name: str | None = None
     instructions: str | None = None
+    description: str | None = None
 
 
 # ── Project CRUD ──────────────────────────────────────────────────────────────
@@ -47,7 +51,7 @@ async def list_projects():
 
 @router.post("/projects")
 async def create_project(body: CreateProject):
-    p = await projects.create(body.name, body.instructions)
+    p = await projects.create(body.name, body.instructions, body.description)
     return {"project": p}
 
 
@@ -62,7 +66,9 @@ async def get_project(project_id: str):
 
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, body: PatchProject):
-    p = await projects.update(project_id, name=body.name, instructions=body.instructions)
+    p = await projects.update(project_id, name=body.name,
+                              instructions=body.instructions,
+                              description=body.description)
     if not p:
         raise HTTPException(404, "Project not found")
     return {"project": p}
@@ -103,27 +109,22 @@ async def upload_project_document(project_id: str, file: UploadFile = File(...))
     if len(content) > 25 * 1024 * 1024:
         raise HTTPException(400, "File too large (max 25 MB)")
 
-    # Create document record scoped to this project
-    doc_id_result = str(__import__("uuid").uuid4())
-    now = db.now()
+    # Persist bytes + file row using the same path as /api/files/upload, so the
+    # ingest worker can load the source by file_id (it reads payload["file_id"]).
+    files_service.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    file_uuid = str(uuid.uuid4())
+    safe = re.sub(r"[^\w.\-]", "_", file.filename or "upload")
+    stored_name = f"{file_uuid}_{safe}"
+    (files_service.UPLOADS_DIR / stored_name).write_bytes(content)
+    mime = file.content_type or mimetypes.guess_type(safe)[0] or "application/octet-stream"
+    file_row = await files_service.create(file.filename or "upload", stored_name, len(content), mime)
 
-    async def _create_doc():
-        await db.execute(
-            "INSERT INTO document(id, filename, mime, byte_size, status, project_id, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (doc_id_result, file.filename, file.content_type, len(content),
-             "queued", project_id, now, now),
-        )
-    await _create_doc()
+    # Document record scoped to this project.
+    doc = await documents.create(file.filename or safe, mime, len(content), project_id=project_id)
 
-    # Enqueue ingestion
-    await jobs.enqueue("ingest_document", {
-        "doc_id": doc_id_result,
-        "filename": file.filename,
-        "content_b64": __import__("base64").b64encode(content).decode(),
-    })
+    # Enqueue ingestion (queued → extracting → embedding → ready).
+    await jobs.enqueue("ingest_document", {"doc_id": doc["id"], "file_id": file_row["id"]})
 
-    doc = await documents.get(doc_id_result)
     return {"document": doc}
 
 

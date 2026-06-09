@@ -6,7 +6,7 @@
 
 ## What it does
 
-The Atelier can be an **MCP client**: it connects to configured MCP servers, lists their tools, and lets chat invoke them. v1 is intentionally the smallest thing that works:
+Atelier can be an **MCP client**: it connects to configured MCP servers, lists their tools, and lets chat invoke them. v1 is intentionally the smallest thing that works:
 
 - Talk to MCP servers over **stdio** with newline-delimited JSON-RPC.
 - Start with read-only / non-destructive tools.

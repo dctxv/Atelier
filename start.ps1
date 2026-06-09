@@ -1,4 +1,4 @@
-# The Atelier v2 — start script
+# Atelier v2 — start script
 # Run from c:\Atelier:  .\start.ps1
 
 Set-Location $PSScriptRoot
@@ -11,7 +11,7 @@ if ($conn) {
 }
 
 Write-Host ""
-Write-Host "  The Atelier v2" -ForegroundColor DarkYellow
+Write-Host "  Atelier v2" -ForegroundColor DarkYellow
 Write-Host "  http://127.0.0.1:8000" -ForegroundColor DarkYellow
 Write-Host ""
 

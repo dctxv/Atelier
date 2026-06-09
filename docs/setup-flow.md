@@ -6,7 +6,7 @@
 
 ## First run experience
 
-The first time you open The Atelier, nothing is configured. No endpoints, no model. Without a model you can't chat. The first-run experience needs to make that setup fast and clear without being condescending.
+The first time you open Atelier, nothing is configured. No endpoints, no model. Without a model you can't chat. The first-run experience needs to make that setup fast and clear without being condescending.
 
 The `atl_welcomed` key in localStorage tracks whether you've seen the welcome screen. If it's not set, the welcome modal appears. Once you dismiss it (either by setting up or skipping), it's set and never shown again.
 
@@ -17,7 +17,7 @@ The `atl_welcomed` key in localStorage tracks whether you've seen the welcome sc
 The welcome modal is the first thing a new user sees. It has:
 
 1. The "A" monogram icon (same as the nav rail)
-2. A heading: "Welcome to The Atelier"
+2. A heading: "Welcome to Atelier"
 3. A one-paragraph explanation of what it is
 4. Two buttons: "Set up a model" and "Skip for now — I'll type /setup later"
 

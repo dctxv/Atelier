@@ -144,6 +144,9 @@ async def init_db():
             "ALTER TABLE document    ADD COLUMN project_id TEXT",
             "ALTER TABLE memory_atom ADD COLUMN project_id TEXT",
             "ALTER TABLE session     ADD COLUMN project_id TEXT",
+            # Short, human-facing project blurb — the ONLY project datum the
+            # global chat is ever allowed to see (instructions stay private).
+            "ALTER TABLE project     ADD COLUMN description TEXT",
         ]
         for stmt in _migrations:
             try:

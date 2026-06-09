@@ -1,4 +1,4 @@
-# The Atelier
+# Atelier
 
 A self-hosted AI workspace with the hi-fi Atelier design.
 
@@ -52,6 +52,6 @@ Optional environment variables:
 - **Storage:** SQLite (WAL, single serialized writer) with `sqlite-vec` for vectors and FTS5 for keyword search — one shared store behind a hybrid `retrieve()`.
 - **Embeddings:** local-first (hashing fallback or a configured `/embeddings` endpoint), cached by content hash.
 - **Scheduling:** APScheduler for periodic jobs; FSRS-6 (`fsrs`) for flashcards.
-- **Frontend:** React 18 (CDN) + Babel in-browser, design system from The Atelier hi-fi.
+- **Frontend:** React 18 (CDN) + Babel in-browser, design system from Atelier hi-fi.
 
 See [`docs/`](docs/index.md) for the full architecture and design rationale.

@@ -54,7 +54,7 @@ def evaluate(query: str) -> str | None:
         
     q = query.lower().strip()
     # Strip common natural language prefixes
-    q = re.sub(r"^(what(?:'s|\s+is)\s+)?(?:calculate|compute|convert|solve)?\s*", "", q).strip()
+    q = re.sub(r"^(what(?:'?s|\s+is)\s+)?(?:calculate|compute|convert|solve)?\s*", "", q).strip()
     if not q:
         return None
     

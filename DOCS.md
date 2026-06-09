@@ -1,4 +1,4 @@
-# The Atelier — How It Works
+# Atelier — How It Works
 
 *A plain-English guide to what the Atelier does, how it's built, and the decisions behind it. No programming knowledge required.*
 
@@ -6,7 +6,7 @@
 
 ## What is the Atelier?
 
-The Atelier is a personal AI workspace that runs entirely on your own computer. It connects to AI models (like GPT, Claude, or a local model via Ollama) and gives you a rich environment for thinking, research, and memory — without your data being stored on anyone else's servers.
+Atelier is a personal AI workspace that runs entirely on your own computer. It connects to AI models (like GPT, Claude, or a local model via Ollama) and gives you a rich environment for thinking, research, and memory — without your data being stored on anyone else's servers.
 
 The app runs as a web page at `http://localhost:8000`. Everything — your conversations, your memory, your documents — lives in a single file on your machine (`data/atelier.db`).
 
@@ -46,7 +46,7 @@ After the AI finishes its reply, the app automatically extracts any durable fact
 
 ## Documents + RAG (Retrieval-Augmented Generation)
 
-*RAG* is the technical name for "look it up before answering." Most AI tools only search the web. The Atelier searches your web results, your memory facts, **and your own uploaded files** — all at the same time, ranked together.
+*RAG* is the technical name for "look it up before answering." Most AI tools only search the web. Atelier searches your web results, your memory facts, **and your own uploaded files** — all at the same time, ranked together.
 
 ### How to use it
 
@@ -78,7 +78,7 @@ Delete from the Documents surface (trash icon, then confirm). This removes the d
 
 ## The Two-Model System
 
-The Atelier uses two AI models:
+Atelier uses two AI models:
 
 | Tier | When it's used |
 |------|---------------|

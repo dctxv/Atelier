@@ -58,11 +58,14 @@ async def start_research(request: Request):
     query = (data.get("query") or "").strip()
     if not query:
         raise HTTPException(400, "Research query required")
+    depth = (data.get("depth") or "medium").lower()
+    if depth not in ("light", "medium", "intense"):
+        depth = "medium"
     if not await config.active_endpoint_raw() or not await config.get_setting("active_model"):
         raise HTTPException(400, "Configure an endpoint and model in Chat first")
     item = await research_repo.create(query)
-    await jobs.enqueue("research", {"research_id": item["id"]})
-    return {"ok": True, "id": item["id"], "session_id": item["id"], "status": "running"}
+    await jobs.enqueue("research", {"research_id": item["id"], "depth": depth})
+    return {"ok": True, "id": item["id"], "session_id": item["id"], "status": "running", "depth": depth}
 
 
 @router.get("/research/{research_id}/stream")

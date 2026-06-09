@@ -54,7 +54,7 @@ _UNIT_CONV = re.compile(
 
 # ── Time: must be asking for the CURRENT time, not using "time" as a noun ────
 _TIME_Q = re.compile(
-    r"\b(?:what(?:'s|\s+is)\s+(?:the\s+)?(?:current\s+)?time"
+    r"\b(?:what(?:'?s|\s+is)\s+(?:the\s+)?(?:current\s+)?time"
     r"|current\s+time"
     r"|time\s+(?:now|in|at)"
     r"|what\s+time\s+is\s+it"
@@ -195,7 +195,7 @@ def classify(text: str) -> Intent:
     # ── Generic math expression (requires an operator) ────────────────────────
     if not intent.unit_conv and _HAS_DIGIT.search(t) and _MATH_OPERATOR.search(t):
         expr = re.sub(
-            r"^(?:what(?:'s|\s+is)\s+)?(?:calculate|compute|solve|find)?\s*",
+            r"^(?:what(?:'?s|\s+is)\s+)?(?:calculate|compute|solve|find)?\s*",
             "", t, flags=re.I
         ).strip().rstrip("?.")
         intent.math_expr = expr if expr else None
@@ -242,7 +242,7 @@ def classify(text: str) -> Intent:
                 remainder = t.replace(intent.weather_loc, "")
 
             scaffolding = re.sub(
-                r"\b(?:what(?:'s|\s+is)?|how\s+much|tell\s+me|show|get|give\s+me|"
+                r"\b(?:what(?:'?s|\s+is)?|how\s+much|tell\s+me|show|get|give\s+me|"
                 r"can\s+you|please|the|is|of|for|convert|calculate|compute)\b",
                 "", remainder, flags=re.I
             )

@@ -1,6 +1,6 @@
 """Minimal MCP (Model Context Protocol) client (Part 2.8).
 
-The Atelier acts as an MCP *client* so chat can invoke MCP tools. v1 is the
+Atelier acts as an MCP *client* so chat can invoke MCP tools. v1 is the
 simplest viable form:
   - Talk to MCP servers over stdio with newline-delimited JSON-RPC.
   - Start with read-only / non-destructive tools.

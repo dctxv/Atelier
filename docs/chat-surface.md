@@ -248,7 +248,7 @@ I didn't build a retry mechanism. If something fails, you just send the message 
 
 There was a gap between pressing Send and the first token arriving that felt dead — no feedback at all. Not a spinner in the traditional sense; I wanted something that fit the Atelier's typographic register.
 
-What I landed on is a blinking "Thinking…" text that appears in place of the assistant response, formatted exactly like a real reply — the model colophon (`◆ model-name — The Atelier`) above it, the left accent bar beside it — but the body is just the word "Thinking…" with a CSS blink animation applied.
+What I landed on is a blinking "Thinking…" text that appears in place of the assistant response, formatted exactly like a real reply — the model colophon (`◆ model-name — Atelier`) above it, the left accent bar beside it — but the body is just the word "Thinking…" with a CSS blink animation applied.
 
 ```css
 @keyframes blink-thinking {

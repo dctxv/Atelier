@@ -28,7 +28,7 @@ if ($conn) {
     Start-Sleep -Milliseconds 500
 }
 
-Write-Host "  The Atelier v2  http://127.0.0.1:8000" -ForegroundColor DarkYellow
+Write-Host "  Atelier v2  http://127.0.0.1:8000" -ForegroundColor DarkYellow
 
 python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
@@ -114,4 +114,4 @@ The frontend requires no install step. The libs are in `static/lib/`.
 
 This is a personal local tool. Docker would add complexity with zero benefit for a single-user local app. A locked requirements file (`requirements.txt` is already minimal — FastAPI, uvicorn, a few others) would be useful if there were a deployment target. CI would be useful if there were a test suite or multiple contributors. None of those apply yet.
 
-If The Atelier ever becomes something that other people run, the right additions in order would be: a locked requirements file, a Dockerfile, and eventually tests for the backend API. The frontend's "tests" are just opening the browser and seeing if it works.
+If Atelier ever becomes something that other people run, the right additions in order would be: a locked requirements file, a Dockerfile, and eventually tests for the backend API. The frontend's "tests" are just opening the browser and seeing if it works.

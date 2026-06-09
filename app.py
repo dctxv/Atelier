@@ -1,4 +1,4 @@
-"""The Atelier — FastAPI entrypoint (thin).
+"""Atelier — FastAPI entrypoint (thin).
 
 Everything substantive lives in services/ and workers/. This file only wires
 the app: lifespan (shared httpx client, DB init, importer, job system), the
@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
     db.shutdown()
 
 
-app = FastAPI(title="The Atelier", lifespan=lifespan)
+app = FastAPI(title="Atelier", lifespan=lifespan)
 
 # Lock CORS to real client origins (Part 1.6) — never "*" with credentials.
 _origins = os.getenv(

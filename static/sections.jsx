@@ -1,4 +1,4 @@
-/* ====== Shared setting sections — The Atelier ======
+/* ====== Shared setting sections — Atelier ======
  *
  * Three section components that render differently by mode:
  *   mode="wizard"   → step body inside SetupModal (onAdvance moves to next step)
@@ -500,7 +500,7 @@ function ModelSection({ mode, config, onConfigChange, onAdvance, subStep }) {
  * PersonaSection
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 function PersonaSection({ mode, config, onConfigChange, onAdvance }) {
-  const defaultPersona = "You are The Atelier, a sophisticated AI workspace assistant. " +
+  const defaultPersona = "You are Atelier, a sophisticated AI workspace assistant. " +
     "Provide direct, natural answers. Do not redundantly repeat your conclusions, equations, or exact phrases across paragraphs. " +
     "Use LaTeX formatting like \\( \\) or \\[ \\] for math.";
 

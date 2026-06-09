@@ -1,4 +1,4 @@
-/* ====== App root — The Atelier v2 ====== */
+/* ====== App root — Atelier v2 ====== */
 const { useState, useEffect } = React;
 
 const { ChatSurface }       = window.V2Chat;
@@ -28,6 +28,8 @@ function App() {
   const [surface,       setSurface]       = useState(()=>ls('atl_surface','chat'));
   const [theme,         setTheme]         = useState(()=>ls('atl_theme','natural'));
   const [activeProject, setActiveProject] = useState(null); // project the user is chatting inside
+  const [chatTarget,    setChatTarget]    = useState(null); // session to open in the main chat after a move
+  const [projectsTarget, setProjectsTarget] = useState(null); // {projectId, sessionId} to open after a move
   const [showWelcome, setShowWelcome] = useState(false);
   const [showSetup,   setShowSetup]   = useState(false);
   const [showSearchSetup, setShowSearchSetup] = useState(false);
@@ -58,10 +60,16 @@ function App() {
 
   const toggleTheme=()=>setTheme(t=>t==='natural'?'mono':'natural');
 
+  /* A conversation was moved between the main chat and a project. Follow it. */
+  function handleMoved(sessionId, toProjectId){
+    if (toProjectId){ setProjectsTarget({ projectId: toProjectId, sessionId }); setSurface('projects'); }
+    else { setChatTarget(sessionId); setSurface('chat'); }
+  }
+
   const renderSurface=()=>{
     switch(surface){
-      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings} onNav={setSurface} onPlay={()=>setShowGames(true)} activeProject={activeProject} onExitProject={()=>setActiveProject(null)}/>;
-      case 'projects':  return <ProjectsSurface onOpenChat={proj=>{ setActiveProject(proj); setSurface('chat'); }}/>;
+      case 'chat':      return <ChatSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings} onNav={setSurface} onPlay={()=>setShowGames(true)} activeProject={activeProject} onExitProject={()=>setActiveProject(null)} onMoved={handleMoved} openSessionId={chatTarget} onConsumeOpen={()=>setChatTarget(null)}/>;
+      case 'projects':  return <ProjectsSurface onSetup={openSetup} onSearchSetup={openSearchSetup} onWeatherSetup={openWeatherSetup} onStockSetup={openStockSetup} onToggleTheme={toggleTheme} onOpenSettings={openSettings} onNav={setSurface} onPlay={()=>setShowGames(true)} onMoved={handleMoved} target={projectsTarget} onConsumeTarget={()=>setProjectsTarget(null)}/>;
       case 'research':  return <ResearchSurface/>;
       case 'memory':    return <MemorySurface/>;
       case 'notes':     return <NotesSurface/>;

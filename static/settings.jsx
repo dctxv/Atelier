@@ -1,4 +1,4 @@
-/* ====== Settings surface — The Atelier ======
+/* ====== Settings surface — Atelier ======
  *
  * Scrollable settings page that composes the shared section components.
  * Desktop: left-rail section nav + right content area.

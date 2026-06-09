@@ -204,11 +204,15 @@ async def _doc_vector_hits(serialized_vec: bytes, k: int,
             (serialized_vec, k * PROJECT_OVERFETCH, project_id, k),
         )
     else:
+        # Global: over-fetch then exclude project-scoped documents so project
+        # files never bleed into the main chat (symmetric to memory atoms below).
         rows = await db.fetchall(
             "SELECT dc.id AS id FROM "
             "(SELECT rowid, distance FROM document_chunk_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?) v "
-            "JOIN document_chunk dc ON dc.rowid = v.rowid ORDER BY v.distance",
-            (serialized_vec, k),
+            "JOIN document_chunk dc ON dc.rowid = v.rowid "
+            "JOIN document d ON d.id = dc.document_id "
+            "WHERE d.project_id IS NULL ORDER BY v.distance LIMIT ?",
+            (serialized_vec, k * PROJECT_OVERFETCH, k),
         )
     return [r["id"] for r in rows]
 
@@ -227,10 +231,12 @@ async def _doc_fts_hits(query: str, k: int,
             (expr, project_id, k),
         )
     else:
+        # Global: exclude project-scoped documents (see _doc_vector_hits).
         rows = await db.fetchall(
             "SELECT dc.id AS id FROM document_chunk_fts f "
             "JOIN document_chunk dc ON dc.rowid = f.rowid "
-            "WHERE document_chunk_fts MATCH ? ORDER BY rank LIMIT ?",
+            "JOIN document d ON d.id = dc.document_id "
+            "WHERE document_chunk_fts MATCH ? AND d.project_id IS NULL ORDER BY rank LIMIT ?",
             (expr, k),
         )
     return [r["id"] for r in rows]

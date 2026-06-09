@@ -82,7 +82,7 @@ _ZONES: dict[str, str] = {
 }
 
 DEFAULT_PERSONA = (
-    "You are The Atelier, a sophisticated AI workspace assistant. "
+    "You are Atelier, a sophisticated AI workspace assistant. "
     "Provide direct, natural answers. Do not redundantly repeat your conclusions, "
     "equations, or exact phrases across paragraphs. "
     "Use LaTeX formatting like \\( \\) or \\[ \\] for math."
