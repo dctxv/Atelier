@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from services import config, http_client, llm, retrieval, search, sessions, skills
+from services import config, db, http_client, llm, retrieval, search, sessions, skills
 from services import math_eval, weather, stock, local_tools
 from services import projects as projects_svc
 from services.intent import classify, Intent
@@ -331,6 +331,7 @@ async def chat_stream(request: Request):
     session_id = body.get("session_id")
     web_search_enabled = bool(body.get("web_search"))
     project_id = body.get("project_id") or None
+    memory_off = bool(body.get("memory_off", False))  # Living Memory v2 — per-turn opt-out
 
     # Load config knobs
     total_budget = int(await _cfg("chat.total_context_budget"))
@@ -389,12 +390,16 @@ async def chat_stream(request: Request):
                     await sessions.add_message(session_id, "user", user_text, model)
                 if session_id and assistant_text:
                     await sessions.add_message(session_id, "assistant", assistant_text, model)
-                if user_text or assistant_text:
-                    await jobs.enqueue("extract_memory", {
-                        "user_text": user_text, "assistant_text": assistant_text,
-                        "source_kind": "chat", "source_id": session_id,
-                        "project_id": project_id,
-                    })
+                # Hot-path extraction gate: skip if memory_off or phatic turn
+                if (user_text or assistant_text) and not memory_off:
+                    from workers.extraction import _significance_score
+                    min_chars = 20
+                    if len(user_text) >= min_chars or _significance_score(user_text) > 0:
+                        await jobs.enqueue("extract_memory", {
+                            "user_text": user_text, "assistant_text": assistant_text,
+                            "source_kind": "chat", "source_id": session_id,
+                            "project_id": project_id, "memory_off": memory_off,
+                        })
 
         return StreamingResponse(
             generate_chat_only(), media_type="text/event-stream",
@@ -640,6 +645,22 @@ async def chat_stream(request: Request):
     # Memory + docs
     mem_block = retrieval.format_block(atoms)
     doc_filenames = retrieval.doc_sources(atoms)
+
+    # Commitments block (M5): inject due/overdue assistant promises
+    try:
+        commitment_rows = await db.fetchall(
+            "SELECT t.title, t.created_at FROM task t "
+            "WHERE t.source_kind='assistant_commitment' AND t.status='todo' "
+            "ORDER BY t.created_at ASC LIMIT 3"
+        )
+        if commitment_rows:
+            commit_lines = ["[COMMITMENTS] Promises you made in previous sessions:"]
+            for row in commitment_rows:
+                commit_lines.append(f"- {row['title']}")
+            context_blocks.append(("memory", "\n".join(commit_lines)))
+    except Exception:
+        pass  # commitment block is best-effort
+
     if mem_block:
         # Add provenance instruction to memory block
         mem_with_instruction = mem_block + (
@@ -834,14 +855,19 @@ async def chat_stream(request: Request):
             assistant_text = "".join(assistant_chunks).strip()
             if session_id and assistant_text:
                 await sessions.add_message(session_id, "assistant", assistant_text, model)
-            if user_text or assistant_text:
-                await jobs.enqueue("extract_memory", {
-                    "user_text": user_text,
-                    "assistant_text": assistant_text,
-                    "source_kind": "chat",
-                    "source_id": session_id,
-                    "project_id": project_id,
-                })
+            # Hot-path extraction gate: skip if memory_off or too short
+            if (user_text or assistant_text) and not memory_off:
+                from workers.extraction import _significance_score
+                min_chars = 20
+                if len(user_text) >= min_chars or _significance_score(user_text) > 0:
+                    await jobs.enqueue("extract_memory", {
+                        "user_text": user_text,
+                        "assistant_text": assistant_text,
+                        "source_kind": "chat",
+                        "source_id": session_id,
+                        "project_id": project_id,
+                        "memory_off": memory_off,
+                    })
 
     return StreamingResponse(
         generate(), media_type="text/event-stream",

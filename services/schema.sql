@@ -434,3 +434,38 @@ CREATE TABLE IF NOT EXISTS project (
 -- NOTE: the project_id columns are added by ALTER TABLE migrations in db.py,
 -- and the indexes that depend on them are created there *after* the ALTERs run
 -- (they cannot live here because executescript runs before the columns exist).
+
+-- ── Living Memory System v2 ──────────────────────────────────────────────────
+
+-- Append-only audit trail for material atom changes.
+CREATE TABLE IF NOT EXISTS memory_event (
+    id         TEXT PRIMARY KEY,
+    atom_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    detail     TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mevent_atom ON memory_event(atom_id);
+CREATE INDEX IF NOT EXISTS idx_mevent_kind ON memory_event(kind, created_at);
+
+-- Open questions/uncertainties surfaced for review.
+CREATE TABLE IF NOT EXISTS memory_question (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    atom_ids    TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    status      TEXT DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER,
+    resolution  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mquestion_status ON memory_question(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_mquestion_kind   ON memory_question(kind, created_at);
+
+-- Slot-pattern table for predictive pre-fetch (Tier 3).
+CREATE TABLE IF NOT EXISTS memory_pattern (
+    slot       TEXT PRIMARY KEY,
+    query_vec  BLOB,
+    count      INTEGER DEFAULT 0,
+    last_hit   INTEGER
+);
