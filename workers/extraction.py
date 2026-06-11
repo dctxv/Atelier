@@ -183,6 +183,11 @@ async def extract_memory(payload: dict):
     if memory_off or (not user_text and not assistant_text):
         return
 
+    # Tier gate: no extraction until the user has selected a memory tier
+    tier_selected = str(await config.get_setting("memory.tier_selected") or "false").lower() == "true"
+    if not tier_selected:
+        return
+
     source_kind = payload.get("source_kind", "chat")
     source_id   = payload.get("source_id")
     project_id  = payload.get("project_id") or None

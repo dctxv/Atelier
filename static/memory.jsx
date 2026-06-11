@@ -1,6 +1,205 @@
 /* ====== v2 Memory surface — Living Memory System ====== */
 const { useState, useEffect, useCallback } = React;
 
+// ── Tier configuration ────────────────────────────────────────────────────────
+
+const TIER_CONFIG = {
+  basic: {
+    title: 'Basic',
+    tagline: 'A gentle, low-cost memory that records the facts without interpretation.',
+    accent: '#2dd4bf',
+    accentRgb: '45,212,191',
+    cost: '~$0.50/mo',
+    includes: null,
+    coreFeatures: [
+      'Remembers things you explicitly tell me — jobs, preferences, projects, tools.',
+      'Keeps track of your timeline so I always know where you are now.',
+    ],
+    extraFeatures: [
+      'Surfaces gentle reminders when facts get old or might have changed.',
+      'No speculation, no inference. Just a clean, searchable record.',
+    ],
+    details: [
+      'Stores: facts, preferences, identity, projects, tools',
+      'Models: cheapest/fastest only (extraction gate)',
+      'Background jobs: none beyond extraction and consolidation',
+    ],
+  },
+  reflective: {
+    title: 'Reflective',
+    tagline: 'A thoughtful memory that resolves contradictions and learns from its mistakes.',
+    accent: '#60a5fa',
+    accentRgb: '96,165,250',
+    cost: '$1–2/mo',
+    includes: 'Everything in Basic, plus:',
+    coreFeatures: [
+      'Detects when new facts conflict with old ones and asks you to clarify — building a truthful timeline.',
+      'Maintains a Review area where you can see and resolve open questions about your memories.',
+    ],
+    extraFeatures: [
+      'Learns how reliable different types of information are from you and gets better over time.',
+      "Remembers promises you've asked me to keep (reminders, follow-ups).",
+    ],
+    details: [
+      'Stores: all Basic data + conflict questions + stale goal flags',
+      'Models: cheap for extraction; small model for conflict detection',
+      'Background jobs: weekly goal staleness check',
+    ],
+  },
+  prescient: {
+    title: 'Prescient',
+    tagline: "A memory that connects the dots, anticipates what you'll need, and tells your story.",
+    accent: '#a78bfa',
+    accentRgb: '167,139,250',
+    cost: '$3+/mo',
+    includes: 'Everything in Reflective, plus:',
+    coreFeatures: [
+      "Builds a multi-strand timeline of your life and lets you time-travel through past versions of your knowledge.",
+      "Tracks your goals and ambitions, notices when they're quietly fading, and helps you reflect on them.",
+    ],
+    extraFeatures: [
+      "Forms silent hypotheses about your preferences and future direction — shows them to you to confirm or reject.",
+      "Can write a living biography of your life, organized into chapters, that you can edit and lock.",
+      "Pre-warms relevant memories when you start a session, so answers feel instantaneous.",
+    ],
+    details: [
+      'Stores: all Reflective data + hypotheses + drift insights + narrative chapters',
+      'Models: cheap for most; capable model for biography and deep synthesis',
+      'Background jobs: weekly hypothesis generation + quarterly drift analysis',
+    ],
+  },
+};
+
+function TierCard({ tierKey, cfg, onEnable, saving }) {
+  const isBusy   = saving !== null;
+  const isSaving = saving === tierKey;
+  const { accent, accentRgb } = cfg;
+  const allFeatures = [...cfg.coreFeatures, ...cfg.extraFeatures];
+
+  return (
+    <div style={{
+      flex: 1, display: 'flex', flexDirection: 'column',
+      background: 'var(--nav-bg)',
+      border: '1px solid var(--border-2)',
+      borderRadius: 8, overflow: 'hidden',
+      transition: 'border-color 0.2s',
+      opacity: isBusy && !isSaving ? 0.4 : 1,
+    }}>
+      {/* Top accent bar */}
+      <div style={{ height: 2, background: accent, flexShrink: 0 }}/>
+
+      {/* Body */}
+      <div style={{ padding: '22px 20px 0', display: 'flex', flexDirection: 'column', flex: 1 }}>
+        <div style={{ fontFamily: 'var(--font-m)', fontSize: 14, fontWeight: 500, color: 'var(--text)', marginBottom: 6 }}>
+          {cfg.title}
+        </div>
+        <div style={{ fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-2)', lineHeight: 1.55 }}>
+          {cfg.tagline}
+        </div>
+
+        <div style={{ height: 1, background: 'var(--rule)', margin: '16px 0 13px', flexShrink: 0 }}/>
+
+        {cfg.includes && (
+          <div style={{ fontFamily: 'var(--font-m)', fontSize: 10, letterSpacing: '0.04em', marginBottom: 10, flexShrink: 0, color: `rgba(${accentRgb},0.6)` }}>
+            {cfg.includes}
+          </div>
+        )}
+
+        <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+          {allFeatures.map((f, i) => (
+            <li key={i} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+              <div style={{ width: 3, height: 3, borderRadius: '50%', background: accent, opacity: 0.6, marginTop: 6, flexShrink: 0 }}/>
+              <span style={{ fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-2)', lineHeight: 1.65 }}>{f}</span>
+            </li>
+          ))}
+        </ul>
+
+        <div style={{
+          fontFamily: 'var(--font-m)', fontSize: 10, color: 'var(--text-3)',
+          paddingTop: 10, paddingBottom: 2, flexShrink: 0,
+        }}>
+          How does it work?
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{
+        padding: '14px 20px 20px', borderTop: '1px solid var(--border)', marginTop: 14,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
+      }}>
+        <span style={{ fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-3)', letterSpacing: '0.01em' }}>
+          {cfg.cost}
+        </span>
+        <button
+          onClick={() => onEnable(tierKey)}
+          disabled={isBusy}
+          style={{
+            fontFamily: 'var(--font-m)', fontSize: 11,
+            borderRadius: 6, padding: '8px 15px', letterSpacing: '0.03em',
+            cursor: isBusy ? 'wait' : 'pointer',
+            background: `rgba(${accentRgb},0.1)`,
+            border: `1px solid rgba(${accentRgb},0.32)`,
+            color: accent,
+            opacity: isSaving ? 0.6 : 1,
+            transition: 'opacity 0.15s',
+          }}>
+          {isSaving ? 'Setting up…' : `Enable ${cfg.title}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TierSetupScreen({ onTierSelected }) {
+  const [saving, setSaving] = useState(null);
+
+  async function handleEnable(tierKey) {
+    setSaving(tierKey);
+    try {
+      await fetch('/api/memory/tier', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ depth: tierKey }),
+      });
+      onTierSelected(tierKey);
+    } catch(e) {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div style={{
+      flex: 1, overflow: 'hidden', background: 'var(--thread-bg)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '0 24px',
+    }}>
+      <div style={{ width: '100%', maxWidth: 1080, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+
+        <div style={{ fontFamily: 'var(--font-m)', fontSize: 10, letterSpacing: '0.2em', color: 'var(--text-3)', textTransform: 'uppercase', marginBottom: 16 }}>
+          Memory Setup
+        </div>
+        <h1 style={{ fontFamily: 'var(--font-d)', fontStyle: 'italic', fontWeight: 400, fontSize: 36, color: 'var(--text)', letterSpacing: '-0.02em', lineHeight: 1.1, textAlign: 'center', marginBottom: 12 }}>
+          Choose how you want me to remember.
+        </h1>
+        <p style={{ fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-3)', lineHeight: 1.75, textAlign: 'center', marginBottom: 48 }}>
+          Memory starts from the moment you opt in — nothing from before is backfilled.<br/>
+          You can change tiers at any time in Settings.
+        </p>
+
+        <div style={{ display: 'flex', gap: 12, width: '100%', alignItems: 'stretch' }}>
+          {Object.entries(TIER_CONFIG).map(([key, cfg]) => (
+            <TierCard key={key} tierKey={key} cfg={cfg} onEnable={handleEnable} saving={saving}/>
+          ))}
+        </div>
+
+        <p style={{ fontFamily: 'var(--font-m)', marginTop: 28, fontSize: 10, color: 'var(--text-3)', textAlign: 'center', lineHeight: 1.6 }}>
+          Upgrading later adds new processing immediately. Downgrading stops future additions without deleting existing memories.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const CAT_MAP = {
   preference: 'preferences', identity: 'preferences', goal: 'preferences',
   contact: 'people',
@@ -236,15 +435,18 @@ function MemorySurface() {
   const [query,         setQuery]         = useState('');
   const [loading,       setLoading]       = useState(true);
   const [reviewBadge,   setReviewBadge]   = useState(0);
+  const [tierSelected,  setTierSelected]  = useState(null); // null=loading, false=setup needed, string=depth
 
   const loadData = useCallback(() => {
     setLoading(true);
     Promise.all([
+      fetch('/api/memory/tier').then(r=>r.ok?r.json():{tier_selected:false,depth:'basic'}).catch(()=>({tier_selected:false,depth:'basic'})),
       fetch('/api/memory').then(r=>r.ok?r.json():{memories:[]}).catch(()=>({memories:[]})),
       fetch('/api/skills').then(r=>r.ok?r.json():{skills:[]}).catch(()=>({skills:[]})),
       fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
       fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
-    ]).then(([memData, skillData, qData, goalData]) => {
+    ]).then(([tierData, memData, skillData, qData, goalData]) => {
+      setTierSelected(tierData.tier_selected ? (tierData.depth || 'basic') : false);
       setMemories(memData.memories || memData.memory || []);
       setSkills(skillData.skills || []);
       setQuestions(qData);
@@ -298,6 +500,10 @@ function MemorySurface() {
     <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', opacity:.4 }}>
       <Pulse size={10}/>
     </div>
+  );
+
+  if (tierSelected === false) return (
+    <TierSetupScreen onTierSelected={(depth) => { setTierSelected(depth); loadData(); }}/>
   );
 
   return (
@@ -362,6 +568,21 @@ function MemorySurface() {
             </div>
           </>
         )}
+
+        {/* Tier indicator — always far right */}
+        <button onClick={() => setTierSelected(false)}
+          style={{
+            marginLeft: tab === 'fragments' ? 16 : 'auto',
+            fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)',
+            padding:'3px 9px', border:'1px solid var(--border-2)', borderRadius:5,
+            cursor:'pointer', letterSpacing:'.04em', flexShrink:0,
+            transition:'color var(--t), border-color var(--t)',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color='var(--text-2)'; e.currentTarget.style.borderColor='var(--border-2)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color='var(--text-3)'; e.currentTarget.style.borderColor='var(--border-2)'; }}
+        >
+          {tierSelected}
+        </button>
       </div>
 
       {/* ── Content ── */}

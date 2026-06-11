@@ -34,7 +34,8 @@ These docs exist so that when I come back to this in six months, or when I hand 
 | Document | What it covers |
 |---|---|
 | [shared-core.md](shared-core.md) | The one database / one embed / one retrieval / one job system everything plugs into |
-| [memory.md](memory.md) | Memory atoms, background extraction, dedup, consolidation, chat injection |
+| [memory.md](memory.md) | Living Memory System v2 — structured atoms, predicate categories, decay, reconciliation, hypotheses, drift, all endpoints |
+| [memory-tier-selection.md](memory-tier-selection.md) | Tier selection setup screen, opt-in gating, Basic / Reflective / Prescient depth system |
 | [flashcards.md](flashcards.md) | FSRS-6 scheduling, decks, paste import, AI card generation |
 | [sharing.md](sharing.md) | Expiring share links over uploaded files |
 | [web-search.md](web-search.md) | The search layer — freshness, cache, provider fallback chain, rerank, real-time |
@@ -43,7 +44,7 @@ These docs exist so that when I come back to this in six months, or when I hand 
 | [email.md](email.md) | IMAP sync, categorize, on-demand drafts, explicit-send-only |
 | [mcp.md](mcp.md) | Acting as an MCP client, the approval gate for destructive tools |
 | [latency-testing.md](latency-testing.md) | The instrumentation, the bench harness, and the bottlenecks I actually found |
-| [v2-deferred.md](v2-deferred.md) | Everything I deliberately did *not* build in v1, and why |
+| [v2-deferred.md](v2-deferred.md) | What's still deferred (and what shipped in v2) |
 
 ---
 

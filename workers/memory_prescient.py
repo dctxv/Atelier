@@ -36,6 +36,10 @@ async def generate_hypotheses(payload: dict | None = None):
     into chat context. They live only in the Review surface's hypotheses sub-tab
     and feed the calibration loop.
     """
+    depth = str(await config.get_setting("memory.depth") or "basic").lower()
+    if depth != "prescient":
+        return
+
     max_open = await _get_cfg("memory.hypotheses_max_open", 15)
     per_week = await _get_cfg("memory.hypotheses_per_week", 3)
     horizon_max = await _get_cfg("memory.hypothesis_horizon_max_days", 120)
@@ -181,6 +185,10 @@ async def analyze_drift(payload: dict | None = None):
     These are NEVER injected into chat context — visible only in the
     Memory surface Insights panel.
     """
+    depth = str(await config.get_setting("memory.depth") or "basic").lower()
+    if depth != "prescient":
+        return
+
     # Gather attribute/self_perception supersession events from the past year
     cutoff = db.now() - 365 * 86400
     events = await db.fetchall(
@@ -258,6 +266,10 @@ async def analyze_drift(payload: dict | None = None):
 @jobs.register("memory_goal_stale")
 async def check_stale_goals(payload: dict | None = None):
     """Open a register question for plans/desires untouched for 90 days."""
+    depth = str(await config.get_setting("memory.depth") or "basic").lower()
+    if depth not in ("reflective", "prescient"):
+        return
+
     stale_days = await _get_cfg("memory.goal_stale_days", 90)
     cutoff = db.now() - stale_days * 86400
 
