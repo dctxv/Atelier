@@ -22,6 +22,12 @@ Read-time confidence decay with per-category grace periods and half-lives. Corro
 
 ---
 
+## ~~Prescient Memory Part 1~~ ✓ shipped
+
+Strand timelines, stale-self-image guard, negative-space suppression, memory warming, hypothesis engine v2 (with NLI testing, flaw ledger, inferred atom minting), and weekly diff notes. See [memory-prescient.md](memory-prescient.md).
+
+---
+
 ## The Provenance Layer / Analyst Mode
 
 Break a research report (and eventually any answer) into individual **claims**, each with its evidence, a local entailment check, a confidence split, and contradiction detection across sources. Tables would be `claim`, `claim_evidence`. This is the largest remaining deferred item and the most interesting.

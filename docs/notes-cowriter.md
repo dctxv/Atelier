@@ -16,11 +16,13 @@ They stream token-by-token like chat, over SSE, from `/api/notes/cowrite`. Each 
 
 The latency target is first-token < 300ms with a local model. That's a property of the model, not the app — the app overhead before the stream is just one fast retrieval call.
 
-## Ingest on save, never per keystroke
+## Ingest on save — removed
 
-When I save a note with content, the router enqueues an `ingest_note` job. That job (`workers/cowriter.py`) makes the note retrievable by writing it into memory (`source_kind="note"`). To avoid piling up a new atom on every autosave, ingestion is **replace-then-insert**: it deletes the note's prior atoms and writes one fresh, trimmed atom. Embedding happens in the background on save/idle — never on a keystroke (hot-path rule 1).
+Notes no longer write into the memory atom store. The `ingest_note` enqueue was removed from `routers/notes.py` in the Prescient Memory Part 1 update. The `ingest_note` job (`workers/cowriter.py`) still exists for backwards compatibility but is no longer triggered on save.
 
-So: save a note, and its content becomes something chat and research can find. That's the acceptance test, and it's the same ingestion pipeline everything else uses.
+The reason: notes are personal writing — drafts, scratch thoughts, reference material — and having them show up verbatim as memory fragments created noise in chat context. Memory is for facts extracted from *conversation*, not for documents. Notes remain fully searchable through their own document index (FTS5 on the note body); they just don't become memory atoms.
+
+The `workers/cowriter.py` guard remains: `memory_diff` notes (the weekly digest) are still explicitly blocked from ingestion should the job ever be re-enabled for other source kinds.
 
 ---
 

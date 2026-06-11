@@ -68,7 +68,7 @@ The original version: a planner split the question into up to five sub-questions
 
 ## What it does, in one paragraph
 
-You type a question into the Research surface. In the background the Atelier breaks your question into smaller ones, searches the web for each, reads what it finds, and writes up an answer. The answer isn't just an essay: it's a set of **claims** — individual, checkable statements — and each claim shows how confident the system is, which sources back it up, and whether sources disagree. The important findings are also saved into the app's memory, so later, in chat, the Atelier already knows what the research turned up without you re-running it.
+You type a question into the Research surface. In the background the Atelier breaks your question into smaller ones, searches the web for each, reads what it finds, and writes up an answer. The answer isn't just an essay: it's a set of **claims** — individual, checkable statements — and each claim shows how confident the system is, which sources back it up, and whether sources disagree.
 
 It runs as a **background job**, so you can leave the page, do something else, and come back — the work keeps going and nothing is lost.
 
@@ -84,7 +84,7 @@ Think of it as a small research team working in stages:
 4. **It writes the answer as claims.** A more capable model turns the best material into short, specific, checkable statements, grouped into sections, each pointing back to its sources.
 5. **It checks each claim.** For every claim it re-reads the cited sources and asks: *do these actually support this, contradict it, or not really address it?* From that it produces a **confidence** score and a **stance** label.
 6. **It links the ideas together.** A final pass pulls out key concepts and how they relate, and saves them for future use. *(The visual concept-map is not built yet — see "Still on the list.")*
-7. **It saves everything and updates memory.** The report, claims, evidence, and sources are stored; the strongest findings are added to memory.
+7. **It saves everything.** The report, claims, evidence, and sources are stored. Research findings are no longer pushed into the memory atom store — memory is for facts extracted from *conversation*, not documents. The personal context lookup at the start (step 1) still works; findings just don't auto-populate memory atoms anymore.
 
 ---
 
