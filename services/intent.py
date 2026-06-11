@@ -249,3 +249,43 @@ def classify(text: str) -> Intent:
             intent.is_bare_local = len(scaffolding.strip().strip("?.,!")) < 5
 
     return intent
+
+
+# ── Memory relevance gate (retrieval gating) ──────────────────────────────────
+# True  = clearly wants personal memory context
+# False = clearly doesn't (pure technical/factual query, no personal signal)
+# None  = ambiguous → caller injects memory by default
+
+_MEM_WANT = re.compile(
+    r"\b(remember|recall|you know|told you|mentioned|last time|earlier you|"
+    r"we (discussed|decided)|based on what you know|about me|for me|"
+    r"should i|recommend|suggest|my (project|name|setup|stack|goal|plan|"
+    r"preference|workflow|code|notes?|docs?))\b",
+    re.I,
+)
+_PERSONAL = re.compile(
+    r"\b(i|i'm|i've|i'd|i'll|me|my|mine|myself|we|we're|our|us)\b", re.I
+)
+_MEM_SKIP = re.compile(
+    r"^\s*(what(?:'s| is| are)|who (?:is|was)|define|explain|how (?:do|does|to)|"
+    r"write (?:me )?(?:a |an |the )?(?:function|code|script|program|regex|sql|query|"
+    r"class|component)|generate|translate|summari[sz]e this|fix this|give me an example)\b",
+    re.I,
+)
+
+
+def memory_relevance(text: str):
+    """Return True (wants memory), False (skip memory), or None (ambiguous).
+
+    False is returned only when the message is clearly impersonal: a definition,
+    code-generation, or technical explanation request with no first-person signal.
+    None and True both result in memory injection; False skips it (except pinned atoms).
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _MEM_WANT.search(t):
+        return True
+    if _MEM_SKIP.match(t) and not _PERSONAL.search(t):
+        return False
+    return None

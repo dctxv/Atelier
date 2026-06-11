@@ -137,6 +137,33 @@ def headers(ep: dict) -> dict:
     return h
 
 
+# ── Memory tier gating ────────────────────────────────────────────────────────
+# Maps capability name → minimum tier required.
+_TIER_ORDER = {"essential": 0, "living": 1, "prescient": 2}
+_CAP_TIER: dict[str, str] = {
+    "structured":       "living",
+    "reconciliation":   "living",
+    "review":           "living",
+    "timelines":        "living",
+    "goals":            "living",
+    "commitments":      "living",
+    "warming_basic":    "living",
+    "strands":          "prescient",
+    "stale_guard":      "prescient",
+    "negative_space":   "prescient",
+    "warming":          "prescient",
+    "hypothesis":       "prescient",
+    "weekly_diff":      "prescient",
+}
+
+
+async def tier_allows(capability: str) -> bool:
+    """Return True when the current memory tier enables the requested capability."""
+    current = (await get_setting("memory.tier") or "living").strip().lower()
+    required = _CAP_TIER.get(capability, "living")
+    return _TIER_ORDER.get(current, 1) >= _TIER_ORDER.get(required, 1)
+
+
 async def public_config() -> dict:
     return {
         "endpoints": await list_endpoints(),

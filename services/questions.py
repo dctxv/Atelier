@@ -118,6 +118,12 @@ async def resolve_question(
         for aid in atom_ids:
             await memory.retract_atom(aid, "user_rejected_both")
 
+    elif choice == "accept_named" and detail:
+        # User named a new strand from an insight_offer.  atom_ids holds the
+        # novel predicates (stored as strings, not UUIDs) at question-creation time.
+        from . import strands as strands_svc
+        await strands_svc.add_strand(detail.strip(), atom_ids)
+
     elif choice == "dismiss":
         pass  # just close the question, no atom changes
 

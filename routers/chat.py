@@ -31,7 +31,7 @@ from fastapi.responses import StreamingResponse
 from services import config, db, http_client, llm, retrieval, search, sessions, skills
 from services import math_eval, weather, stock, local_tools
 from services import projects as projects_svc
-from services.intent import classify, Intent
+from services.intent import classify, Intent, memory_relevance
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -642,9 +642,16 @@ async def chat_stream(request: Request):
                 ],
             }
 
-    # Memory + docs
-    mem_block = retrieval.format_block(atoms)
-    doc_filenames = retrieval.doc_sources(atoms)
+    # Memory gating: skip memory atoms for clearly impersonal queries (pinned always inject)
+    mem_atoms_all = [a for a in atoms if a.get("source_type") != "document"]
+    doc_atoms_all = [a for a in atoms if a.get("source_type") == "document"]
+    has_pinned = any(a.get("pinned") for a in mem_atoms_all)
+    mem_want = memory_relevance(user_text)
+    inject_memory = mem_want is not False or has_pinned
+    gated_atoms = (mem_atoms_all if inject_memory else []) + doc_atoms_all
+
+    mem_block = retrieval.format_block(gated_atoms)
+    doc_filenames = retrieval.doc_sources(gated_atoms)
 
     # Commitments block (M5): inject due/overdue assistant promises
     try:
@@ -692,7 +699,7 @@ async def chat_stream(request: Request):
         ))
 
     # Provenance summary — what grounded the answer (rendered as chips, §7.3).
-    mem_atoms = [a for a in atoms if a.get("source_type") != "document"]
+    mem_atoms = mem_atoms_all if inject_memory else []
     prov_sources: list[dict] = []
     seen_src: set = set()
     for a in atoms:

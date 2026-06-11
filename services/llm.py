@@ -26,16 +26,21 @@ from . import config, db, http_client
 # Default task → tier mapping. Can be overridden via app_config key "task_tiers"
 # (stored as JSON). "cheap" uses cheap_model; "active" uses active_model.
 _DEFAULT_TASK_TIERS: dict[str, str] = {
-    "chat_reply":          "active",
-    "memory_extraction":   "cheap",
-    "categorization":      "cheap",
-    "research_plan":       "cheap",
-    "research_gap":        "cheap",
-    "claim_verify":        "cheap",
-    "research_synthesis":  "active",
-    "document_abstract":   "cheap",
-    "card_generation":     "cheap",
-    "cowriter":            "active",
+    "chat_reply":            "active",
+    "memory_extraction":     "cheap",
+    "categorization":        "cheap",
+    "research_plan":         "cheap",
+    "research_gap":          "cheap",
+    "claim_verify":          "cheap",
+    "research_synthesis":    "active",
+    "document_abstract":     "cheap",
+    "card_generation":       "cheap",
+    "cowriter":              "active",
+    # Prescient memory (P1.0–P1.6)
+    "strand_cluster":        "cheap",
+    "hypothesis_generation": "cheap",
+    "hypothesis_nli":        "cheap",
+    "weekly_diff_summary":   "cheap",
 }
 
 

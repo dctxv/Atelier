@@ -1,6 +1,8 @@
 """Session + message HTTP layer (chat history persistence). Thin."""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 
 from services import sessions
@@ -18,9 +20,17 @@ async def list_sessions(project_id: str | None = None, scope: str = "global"):
 @router.post("/sessions")
 async def create_session(request: Request):
     data = await request.json()
+    project_id = data.get("project_id")
     s = await sessions.create(name=data.get("name", "New chat"),
                               model=data.get("model"), session_id=data.get("id"),
-                              project_id=data.get("project_id"))
+                              project_id=project_id)
+    # Fire memory warming as a background task (Fix 4 / P1.4).
+    # Never blocks the response — warming is a latency optimization only.
+    try:
+        from services.warming import warm_session
+        asyncio.create_task(warm_session(s["id"], project_id))
+    except Exception:
+        pass
     return {"ok": True, "session": s}
 
 
