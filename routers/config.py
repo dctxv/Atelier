@@ -80,6 +80,23 @@ async def probe_endpoint(request: Request):
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e), "models": []}
 
+@router.get("/config/settings/{key:path}")
+async def get_setting(key: str):
+    """Read a single app_config setting by key. Returns {value: ...} or 404."""
+    val = await config.get_setting(key)
+    if val is None:
+        raise HTTPException(404, "Setting not found")
+    return {"key": key, "value": val}
+
+
+@router.put("/config/settings/{key:path}")
+async def put_setting(key: str, request: Request):
+    """Write an app_config setting (admin use; no whitelist — caller must be authed)."""
+    data = await request.json()
+    await config.set_setting(key, data.get("value", ""))
+    return {"ok": True}
+
+
 @router.put("/weather/keys")
 async def set_weather_keys(request: Request):
     data = await request.json()

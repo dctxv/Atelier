@@ -187,6 +187,15 @@ async def extract_memory(payload: dict):
     source_id   = payload.get("source_id")
     project_id  = payload.get("project_id") or None
 
+    # Update slot pattern vector for warming (P1.4 §5.3) — pure local math
+    if user_text and source_kind == "chat":
+        try:
+            from services.warming import update_slot_pattern
+            import asyncio
+            asyncio.create_task(update_slot_pattern(source_id or "", user_text))
+        except Exception:
+            pass
+
     # Worker-level significance gate
     signif_low  = await _get_config("memory.signif_low",  0.3)
     signif_high = await _get_config("memory.signif_high", 0.7)
@@ -333,6 +342,14 @@ async def extract_memory(payload: dict):
         # Route commitments with a due time to the task table
         if modality == "commitment" and assistant_text:
             await _route_commitment(atom, source_id)
+
+        # Hypothesis testing (Fix 5) — only for prescient tier, never on the hot path
+        # (extraction is already background; hypothesis testing is a cheap model call)
+        if atom and modality not in ("hypothesis", "insight") and source_kind == "chat":
+            if await config.get_setting("memory.tier") == "prescient":
+                from workers.memory_prescient import test_hypotheses_against_atom
+                import asyncio
+                asyncio.create_task(test_hypotheses_against_atom(atom))
 
 
 async def _route_commitment(atom: dict, session_id: str | None) -> None:

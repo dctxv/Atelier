@@ -30,6 +30,8 @@ or format differently.
 from __future__ import annotations
 
 import asyncio
+import datetime
+import json
 import math
 import re
 
@@ -412,6 +414,18 @@ async def retrieve(
             and (v.get("valid_until") is None or v.get("valid_until") >= as_of)
         }
 
+    # Invariants G3f + G5f: suppression atoms and hypothesis atoms NEVER reach chat context.
+    mem_rows = {
+        k: v for k, v in mem_rows.items()
+        if v.get("predicate") != "suppressed"
+        and v.get("modality") != "hypothesis"
+    }
+
+    # Prescient-only stale-self-image guard (P1.2): annotate superseded atoms.
+    tier_row = await db.fetchone("SELECT value FROM app_config WHERE key='memory.tier'")
+    if tier_row and tier_row.get("value") == "prescient":
+        await _annotate_stale_self_image(mem_rows)
+
     def mem_final_score(r: dict) -> float:
         base = mem_scores.get(r["id"], 0.0)
         if r["id"] in pinned_ids:
@@ -423,15 +437,22 @@ async def retrieve(
 
     for r in mem_rows.values():
         all_items.append({
-            "id":          r["id"],
-            "text":        r["text"],
-            "type":        r.get("type"),
-            "source_kind": r.get("source_kind"),
-            "source_id":   r.get("source_id"),
-            "created_at":  r.get("created_at"),
-            "pinned":      bool(r.get("pinned")),
-            "score":       round(mem_final_score(r), 4),
-            "source_type": "memory",
+            "id":                r["id"],
+            "text":              r["text"],
+            "type":              r.get("type"),
+            "source_kind":       r.get("source_kind"),
+            "source_id":         r.get("source_id"),
+            "created_at":        r.get("created_at"),
+            "pinned":            bool(r.get("pinned")),
+            "score":             round(mem_final_score(r), 4),
+            "source_type":       "memory",
+            # Structured fields threaded for guard + (inferred) tag (Fix 1)
+            "modality":          r.get("modality"),
+            "predicate":         r.get("predicate"),
+            "subject":           r.get("subject"),
+            "predicate_category": r.get("predicate_category"),
+            "valid_from":        r.get("valid_from"),
+            "meta":              json.loads(r["meta"]) if r.get("meta") else None,
         })
 
     for chunk_id, row in doc_rows.items():
@@ -463,6 +484,47 @@ async def retrieve(
     return out
 
 
+async def _annotate_stale_self_image(mem_rows: dict) -> None:
+    """For self_perception / attribute atoms, append '(as of Mon YYYY)' when
+    superseded by a newer atom in the same (subject, predicate) chain.
+
+    Stamp uses the *superseded atom's own* assertion date so the model reads
+    "this was true then, may be stale" rather than implying the newer date
+    is when it stopped being true.
+
+    One batched SQL query per (subject, predicate) pair; total cost < 1ms.
+    """
+    pairs = {
+        (r.get("subject"), r.get("predicate"))
+        for r in mem_rows.values()
+        if r.get("subject") and r.get("predicate")
+        and (
+            r.get("modality") == "self_perception"
+            or r.get("predicate_category") == "attribute"
+        )
+    }
+    if not pairs:
+        return
+
+    for subj, pred in pairs:
+        newest_row = await db.fetchone(
+            "SELECT MAX(COALESCE(valid_from, created_at)) AS mx FROM memory_atom "
+            "WHERE subject=? AND predicate=? AND (status='active' OR status IS NULL)",
+            (subj, pred),
+        )
+        newest = newest_row["mx"] if newest_row else None
+        if not newest:
+            continue
+        for r in mem_rows.values():
+            if (r.get("subject"), r.get("predicate")) != (subj, pred):
+                continue
+            own_ts = r.get("valid_from") or r.get("created_at") or 0
+            if newest > own_ts:
+                # Stamp with this atom's own assertion date (not the newer atom's date)
+                stamp = datetime.datetime.fromtimestamp(own_ts).strftime("%b %Y")
+                r["text"] = f"{r['text']} (as of {stamp})"
+
+
 def format_block(atoms: list[dict]) -> str:
     if not atoms:
         return ""
@@ -472,7 +534,9 @@ def format_block(atoms: list[dict]) -> str:
     if mem_items:
         lines.append("[MEMORY] Relevant things I know about the user (use naturally, don't list verbatim):")
         for a in mem_items:
-            lines.append(f"- {a['text']}")
+            # (inferred) tag: insight atoms are unconfirmed inferences — shown before believed
+            tag = " (inferred)" if a.get("modality") == "insight" else ""
+            lines.append(f"- {a['text']}{tag}")
     if doc_items:
         if lines:
             lines.append("")

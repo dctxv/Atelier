@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 
-from services import config, db, memory, questions, retrieval
+from services import config, db, memory, questions, retrieval, strands
 
 router = APIRouter(prefix="/api")
 
@@ -164,13 +164,73 @@ async def resolve_question(question_id: str, request: Request):
 # ── Timeline endpoint (M6) ────────────────────────────────────────────────────
 
 @router.get("/memory/timeline")
-async def get_timeline(subject: str = "user", predicate: str | None = None):
-    """Walk the supersession chain for a given subject+predicate bundle.
+async def get_timeline(
+    subject: str = "user",
+    predicate: str | None = None,
+    strand: str | None = None,
+):
+    """Walk version chains for a subject+predicate or an entire strand.
 
-    Returns ordered list of atoms forming the version history.
+    ?strand=<id>  — merge all chains belonging to the strand into one response.
+    ?subject=&predicate=  — walk a single chain (existing behaviour).
+    ?subject=              — list all predicates for a subject.
     """
+    if strand:
+        # P1.1: Strand timeline — gather all (subject, predicate) chains for the strand
+        registry = await strands.load_registry()
+        if not registry:
+            from services.strands import _STATIC_BUNDLES
+            registry = _STATIC_BUNDLES
+        strand_def = next((s for s in registry if s["id"] == strand), None)
+        if not strand_def:
+            raise HTTPException(404, "Strand not found")
+
+        predicates_in_strand = strand_def.get("predicates", [])
+        subjects_in_strand = strand_def.get("subjects", [])
+
+        # Build chains for all predicates (across all subjects)
+        chains: dict = {}
+        for pred in predicates_in_strand:
+            # Find all distinct subjects with this predicate
+            subj_rows = await db.fetchall(
+                "SELECT DISTINCT subject FROM memory_atom "
+                "WHERE predicate=? AND subject IS NOT NULL",
+                (pred,),
+            )
+            for sr in subj_rows:
+                s = sr["subject"]
+                chain = await _build_chain(s, pred)
+                if chain:
+                    key = f"{s}:{pred}"
+                    chains[key] = chain
+
+        # Also chains for explicit subjects
+        for subj in subjects_in_strand:
+            pred_rows = await db.fetchall(
+                "SELECT DISTINCT predicate FROM memory_atom "
+                "WHERE subject=? AND predicate IS NOT NULL",
+                (subj,),
+            )
+            for pr in pred_rows:
+                pred_val = pr["predicate"]
+                key = f"{subj}:{pred_val}"
+                if key not in chains:
+                    chain = await _build_chain(subj, pred_val)
+                    if chain:
+                        chains[key] = chain
+
+        # Compute span
+        all_atoms = [a for chain in chains.values() for a in chain]
+        span_from = min((a.get("valid_from") or a.get("created_at") or 0) for a in all_atoms) if all_atoms else 0
+        span_to = max((a.get("valid_from") or a.get("created_at") or 0) for a in all_atoms) if all_atoms else 0
+        return {
+            "strand": strand,
+            "name": strand_def.get("name", strand),
+            "chains": chains,
+            "span": {"from": span_from, "to": span_to},
+        }
+
     if not predicate:
-        # Return all predicates for this subject, grouped
         rows = await db.fetchall(
             "SELECT DISTINCT predicate FROM memory_atom "
             "WHERE subject=? AND predicate IS NOT NULL ORDER BY predicate",
@@ -289,6 +349,173 @@ async def get_atom_events(memory_id: str):
             for e in events
         ],
     }
+
+
+# ── Strands (P1.0/P1.1) ──────────────────────────────────────────────────────
+
+@router.get("/memory/strands")
+async def get_strands():
+    """List all strands with membership counts."""
+    registry = await strands.load_registry()
+    result = []
+    for s in registry:
+        atom_count = len(await strands.atoms_for_strand(s["id"]))
+        result.append({
+            "id": s["id"],
+            "name": s["name"],
+            "kind": s.get("kind", "static"),
+            "predicates": s.get("predicates", []),
+            "subjects": s.get("subjects", []),
+            "atom_count": atom_count,
+        })
+    # Also an unstranded count
+    all_active = await db.fetchall(
+        "SELECT id, predicate, subject FROM memory_atom "
+        "WHERE (status='active' OR status IS NULL) AND predicate != 'suppressed'"
+    )
+    stranded_ids: set[str] = set()
+    for s in registry:
+        for a in await strands.atoms_for_strand(s["id"]):
+            stranded_ids.add(a["id"])
+    unstranded_count = sum(1 for r in all_active if r["id"] not in stranded_ids)
+    return {"strands": result, "unstranded_count": unstranded_count}
+
+
+@router.patch("/memory/strands/{strand_id}")
+async def update_strand(strand_id: str, request: Request):
+    """Rename a strand (user-editable name)."""
+    data = await request.json()
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Name required")
+    registry = await strands.load_registry()
+    for s in registry:
+        if s["id"] == strand_id:
+            s["name"] = name
+            await strands.save_registry(registry)
+            return {"ok": True}
+    raise HTTPException(404, "Strand not found")
+
+
+# ── Inferred knowledge dashboard (P1.5) ──────────────────────────────────────
+
+@router.get("/memory/inferred")
+async def get_inferred():
+    """Return open hypotheses, inferred facts, drift observations, and scoreboard."""
+    # Open hypotheses
+    hyp_rows = await db.fetchall(
+        "SELECT * FROM memory_atom WHERE modality='hypothesis' "
+        "AND (status='active' OR status IS NULL) ORDER BY created_at DESC LIMIT 50"
+    )
+    hypotheses = []
+    for r in hyp_rows:
+        a = memory._row_to_atom(r)
+        meta = a.get("meta") or {}
+        # Horizon countdown in days
+        horizon = meta.get("horizon")
+        days_left = max(0, (horizon - db.now()) // 86400) if horizon else None
+        hypotheses.append({
+            **_legacy(a),
+            "expected_evidence": meta.get("expected_evidence", ""),
+            "disconfirming_evidence": meta.get("disconfirming_evidence", ""),
+            "domain": meta.get("domain", ""),
+            "generation_pattern": meta.get("generation_pattern", ""),
+            "prior": meta.get("prior", 0.5),
+            "days_left": days_left,
+            "observations": meta.get("observations", []),
+            "watched": meta.get("watched", False),
+        })
+
+    # Inferred facts (modality=insight with inferred_from_hypothesis provenance)
+    insight_rows = await db.fetchall(
+        "SELECT * FROM memory_atom WHERE modality='insight' "
+        "AND (status='active' OR status IS NULL) ORDER BY created_at DESC LIMIT 50"
+    )
+    inferred_facts = []
+    for r in insight_rows:
+        a = memory._row_to_atom(r)
+        meta = a.get("meta") or {}
+        inferred_facts.append({
+            **_legacy(a),
+            "inferred_from_hypothesis": meta.get("inferred_from_hypothesis"),
+            "confirmed_by_atom": meta.get("confirmed_by_atom"),
+            "kind": meta.get("kind", "inferred"),
+        })
+
+    # Scoreboard from calibration blob
+    calib_raw = await config.get_setting("memory.calibration")
+    scoreboard: dict = {}
+    if calib_raw:
+        try:
+            calib = json.loads(calib_raw)
+            patterns_data = calib.get("hypothesis_patterns", {})
+            for pattern, data in patterns_data.items():
+                c = data.get("confirmed", 0)
+                r = data.get("refuted", 0)
+                total = c + r
+                precision = c / total if total > 0 else None
+                from workers.memory_prescient import _rolling_precision
+                outcomes = data.get("outcomes", [])
+                rolling = _rolling_precision(outcomes) if outcomes else None
+                floor_raw = await config.get_setting("memory.hyp_flaw_precision_floor")
+                floor = float(floor_raw) if floor_raw else 0.40
+                scoreboard[pattern] = {
+                    "confirmed": c, "refuted": r,
+                    "precision": rolling,
+                    "suppressed": rolling is not None and rolling < floor,
+                }
+        except Exception:
+            pass
+
+    return {
+        "hypotheses": hypotheses,
+        "inferred_facts": inferred_facts,
+        "scoreboard": scoreboard,
+    }
+
+
+@router.post("/memory/inferred/{atom_id}/confirm")
+async def confirm_inferred(atom_id: str):
+    """Confirm a hypothesis or inferred atom → promote to ordinary 0.98 fact."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    await memory.update_atom(atom_id, confidence=0.98)
+    # Flip modality to factual so the (inferred) tag is removed
+    await db.execute(
+        "UPDATE memory_atom SET modality='factual' WHERE id=?", (atom_id,)
+    )
+    await db.bump_mutation_seq()
+    await memory.log_event(atom_id, "clarified", {"via": "inferred_confirm"})
+    return {"ok": True}
+
+
+@router.post("/memory/inferred/{atom_id}/reject")
+async def reject_inferred(atom_id: str):
+    """Reject a hypothesis or inferred atom → retract + update ledger."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    meta = atom.get("meta") or {}
+    pattern = meta.get("generation_pattern", "extrapolation")
+    if atom.get("modality") == "hypothesis":
+        # Run through refutation path
+        from workers.memory_prescient import _update_flaw_ledger
+        await _update_flaw_ledger(pattern, "r")
+    await memory.retract_atom(atom_id, "user_rejected")
+    return {"ok": True}
+
+
+@router.post("/memory/inferred/{atom_id}/watch")
+async def watch_inferred(atom_id: str):
+    """Mark a hypothesis as 'watching' — no-op on atoms, just sets meta flag."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    meta = atom.get("meta") or {}
+    meta["watched"] = True
+    await memory.update_atom(atom_id, meta=meta)
+    return {"ok": True}
 
 
 # ── Export (M8) ───────────────────────────────────────────────────────────────

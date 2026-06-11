@@ -19,6 +19,8 @@ async def ingest_note(payload: dict):
     note = await notes.get(note_id)
     if not note:
         return
+    if note.get("source_kind") == "memory_diff":
+        return  # never ingest digest notes — memory-about-memory recursion
 
     # Drop prior atoms for this note.
     old = await db.fetchall(
