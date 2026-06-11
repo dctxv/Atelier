@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from services import db, embeddings, llm, memory, retrieval, search
+from services import db, embeddings, llm, retrieval, search
 from services import research as research_repo
 from . import jobs
 
@@ -631,14 +631,6 @@ async def run_research(payload: dict):
                 "Examined": len(examined_urls),
             },
         )
-
-        # Push high-confidence claims to the shared memory substrate
-        for finding in (high_confidence_claims or report.get("key_findings", [])):
-            if isinstance(finding, str) and finding.strip():
-                await memory.add_atom(
-                    text=finding.strip(), type_="fact",
-                    source_kind="research", source_id=research_id, dedup=True,
-                )
 
         await push("done", as_of=int(time.time()))
 

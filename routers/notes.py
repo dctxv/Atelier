@@ -51,9 +51,6 @@ async def update_note(note_id: str, request: Request):
     )
     if not note:
         raise HTTPException(404, "Note not found")
-    # Saved notes flow into ingestion (Phase 4): enqueue if there is content.
-    if note.get("body"):
-        await jobs.enqueue("ingest_note", {"note_id": note_id})
     return {"ok": True, "note": _out(note)}
 
 
