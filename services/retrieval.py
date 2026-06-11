@@ -45,6 +45,19 @@ DIM = db.EMBED_DIM  # 256
 PROJECT_OVERFETCH = 6  # over-fetch factor before project filter [VALIDATE]
 KNN_MIN_COS = 0.25     # min cosine for a memory atom to count as relevant [VALIDATE]
 
+# ── Read-time confidence decay (Living Memory v2) ─────────────────────────────
+# Grace period and half-life per predicate_category.  All [VALIDATE] against
+# real usage once a week of data accumulates.
+_DECAY_PARAMS: dict[str | None, tuple[int | None, int | None]] = {
+    "functional":   (365 * 86400, 365 * 86400),
+    "multi_valued": (180 * 86400, 240 * 86400),
+    "comparative":  (120 * 86400, 180 * 86400),
+    "experiential": (None, None),           # never decays
+    "attribute":    (270 * 86400, 365 * 86400),
+    None:           (90 * 86400, 180 * 86400),  # legacy atoms without category
+}
+FADING_THRESHOLD = 0.4  # effective_confidence below this → faded (excluded by default)
+
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are",
     "was", "were", "be", "with", "at", "by", "it", "this", "that", "these",
@@ -55,10 +68,10 @@ _STOPWORDS = {
 
 # ── Numpy KNN cache ───────────────────────────────────────────────────────────
 
-_knn_mat:     np.ndarray | None = None   # (N, DIM) float32, L2-normalised
-_knn_ids:     list[str] = []              # atom IDs parallel to _knn_mat rows
-_knn_version: tuple[int, int] = (-1, -1) # (COUNT, MAX_ROWID) invalidation stamp
-_knn_lock:    asyncio.Lock | None = None  # created on first use (event loop must exist)
+_knn_mat:     np.ndarray | None = None      # (N, DIM) float32, L2-normalised
+_knn_ids:     list[str] = []               # atom IDs parallel to _knn_mat rows
+_knn_version: tuple[int, int, int] = (-1, -1, -1)  # (COUNT, MAX_ROWID, MUTATION_SEQ)
+_knn_lock:    asyncio.Lock | None = None   # created on first use (event loop must exist)
 
 
 def _get_knn_lock() -> asyncio.Lock:
@@ -68,22 +81,28 @@ def _get_knn_lock() -> asyncio.Lock:
     return _knn_lock
 
 
-async def _knn_current_version() -> tuple[int, int]:
+async def _knn_current_version() -> tuple[int, int, int]:
+    """(count, max_rowid, mutation_seq) — mutation_seq catches in-place updates."""
     row = await db.fetchone(
-        "SELECT COUNT(*) AS n, COALESCE(MAX(rowid), 0) AS mx FROM memory_atom"
+        "SELECT COUNT(*) AS n, COALESCE(MAX(rowid),0) AS mx "
+        "FROM memory_atom WHERE status='active' OR status IS NULL"
     )
-    return (row["n"], row["mx"])
+    seq_row = await db.fetchone("SELECT value FROM app_config WHERE key='memory_mutation_seq'")
+    seq = int(seq_row["value"]) if seq_row else 0
+    return (row["n"], row["mx"], seq)
 
 
 async def _rebuild_knn_cache() -> None:
-    """Load all memory atom vectors from vec0 shadow tables into numpy (~220ms cold)."""
+    """Load only *active* memory atom vectors from vec0 shadow tables into numpy."""
     global _knn_mat, _knn_ids, _knn_version
 
     # Snapshot version BEFORE loading so we don't cache a stale stamp.
     version = await _knn_current_version()
 
-    # atom rowid ↔ atom id
-    id_rows = await db.fetchall("SELECT rowid, id FROM memory_atom ORDER BY rowid")
+    # Only include active (or legacy/NULL-status) atoms in the KNN matrix.
+    id_rows = await db.fetchall(
+        "SELECT rowid, id FROM memory_atom WHERE status='active' OR status IS NULL ORDER BY rowid"
+    )
     rowid_to_id = {r["rowid"]: r["id"] for r in id_rows}
 
     # Raw vector blobs from shadow table (packed float32, chunk_size * DIM per blob).
@@ -169,6 +188,30 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN)
 
 
+def _effective_confidence(atom: dict, now_ts: int) -> float:
+    """Read-time confidence with temporal decay. Pinned atoms never fade."""
+    if atom.get("pinned"):
+        return atom.get("confidence") or 1.0
+    stored_conf = atom.get("confidence")
+    if stored_conf is None:
+        stored_conf = 1.0  # legacy atom: treat as fully confident
+
+    cat = atom.get("predicate_category")
+    grace, half_life = _DECAY_PARAMS.get(cat, _DECAY_PARAMS[None])
+
+    if grace is None:  # experiential — never decays
+        return stored_conf
+
+    anchor = atom.get("last_used_at") or atom.get("created_at") or now_ts
+    age = max(0, now_ts - anchor)
+    if age <= grace:
+        return stored_conf
+
+    decay_age = age - grace
+    decay_factor = math.exp(-math.log(2) * decay_age / half_life)
+    return max(0.05, stored_conf * decay_factor)
+
+
 def _fts_query(query: str) -> str:
     tokens = [t for t in re.findall(r"[a-z0-9]+", query.lower())
               if t not in _STOPWORDS and len(t) > 1]
@@ -183,7 +226,8 @@ async def _fts_hits(query: str, k: int) -> list[str]:
         return []
     rows = await db.fetchall(
         "SELECT m.id AS id FROM memory_fts f JOIN memory_atom m ON m.rowid = f.rowid "
-        "WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+        "WHERE memory_fts MATCH ? AND (m.status='active' OR m.status IS NULL) "
+        "ORDER BY rank LIMIT ?",
         (expr, k),
     )
     return [r["id"] for r in rows]
@@ -261,14 +305,20 @@ def _recency_boost(created_at: int | None) -> float:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-async def retrieve(query: str, k: int = 12, budget_tokens: int = 700,
-                   project_id: str | None = None) -> list[dict]:
-    """Hybrid retrieval.
+async def retrieve(
+    query: str,
+    k: int = 12,
+    budget_tokens: int = 700,
+    project_id: str | None = None,
+    include_faded: bool = False,
+    as_of: int | None = None,
+) -> list[dict]:
+    """Hybrid retrieval with Living Memory v2 decay and temporal filtering.
 
-    When project_id is given:
-      - Memory atoms scoped to this project + globally-pinned atoms.
-      - Document chunks scoped to this project's documents only.
-    When project_id is None: global behavior (unchanged).
+    include_faded: when True, include atoms whose effective_confidence is below
+                   FADING_THRESHOLD (normally excluded from retrieval).
+    as_of:         epoch-seconds timestamp; when given, only return atoms whose
+                   validity range contained that point in time (time-travel).
     """
     query = (query or "").strip()
     if not query:
@@ -344,11 +394,30 @@ async def retrieve(query: str, k: int = 12, budget_tokens: int = 700,
         )
         doc_rows = {r["id"]: r for r in rows if r["document_id"] in ready_doc_ids}
 
+    now_ts = db.now()
+
+    # Apply fading filter: atoms with effective_confidence < threshold are
+    # excluded from default retrieval (they remain visible via include_faded=True).
+    if not include_faded:
+        mem_rows = {
+            k: v for k, v in mem_rows.items()
+            if v.get("pinned") or _effective_confidence(v, now_ts) >= FADING_THRESHOLD
+        }
+
+    # Apply as_of filter: only return atoms whose validity range contained that timestamp.
+    if as_of is not None:
+        mem_rows = {
+            k: v for k, v in mem_rows.items()
+            if (v.get("valid_from") or 0) <= as_of
+            and (v.get("valid_until") is None or v.get("valid_until") >= as_of)
+        }
+
     def mem_final_score(r: dict) -> float:
         base = mem_scores.get(r["id"], 0.0)
         if r["id"] in pinned_ids:
             base += 1.0
-        return base + _recency_boost(r.get("created_at"))
+        ec = _effective_confidence(r, now_ts)
+        return (base + _recency_boost(r.get("created_at"))) * ec
 
     all_items: list[dict] = []
 

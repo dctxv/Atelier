@@ -18,3 +18,4 @@ server.err
 # OS
 .DS_Store
 Thumbs.db
+.claude/worktrees/
