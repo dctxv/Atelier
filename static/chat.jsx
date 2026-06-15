@@ -6,8 +6,14 @@ function loadSessions() {
   try { return JSON.parse(localStorage.getItem('atl_sessions') || '[]'); } catch { return []; }
 }
 function saveSessions(sessions) {
-  try { localStorage.setItem('atl_sessions', JSON.stringify(sessions.slice(0,50))); } catch {}
+  // Strip runtime-only fields — backend is the source of truth for messages.
+  const stripped = sessions.map(({ messages, _loaded, _notFound, ...meta }) => meta);
+  try { localStorage.setItem('atl_sessions', JSON.stringify(stripped.slice(0,50))); } catch {}
 }
+
+// localStorage key used to flag a session that was navigated away from mid-stream.
+const _INTERRUPTED_KEY = 'atl_interrupted_session';
+
 function newSession(model) {
   return { id: crypto.randomUUID(), name:'New chat', messages:[], model:model||null, createdAt:Date.now() };
 }
@@ -200,11 +206,19 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   const [error,      setError]      = useState('');
   const [paletteIndex,     setPaletteIndex]     = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
+  // Start true when localStorage has sessions so the first render shows "Loading…"
+  // instead of flashing the empty state before the lazy-load effect fires.
+  const [loadingMsgs,      setLoadingMsgs]      = useState(() => !projectId && loadSessions().length > 0);
 
   useEffect(() => { try { localStorage.setItem('atl_websearch', webSearch?'1':'0'); } catch {} }, [webSearch]);
-  const threadRef = useRef(null);
-  const abortRef  = useRef(null);
+  const threadRef   = useRef(null);
+  const abortRef    = useRef(null);
   const composerRef = useRef(null);
+  // Stable ref to activeId so the unmount cleanup can read the current value
+  // without being listed as a dependency of the cleanup effect.
+  const activeIdRef = useRef(null);
+  // Tracks which session ID is currently being fetched to prevent duplicate in-flight fetches.
+  const fetchingRef = useRef(null);
 
   /* Global keyboard shortcuts */
   useEffect(() => {
@@ -227,6 +241,22 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [streaming]);
+
+  /* Keep ref in sync so cleanup can read it without stale-closure issues. */
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+
+  /* Abort any in-flight stream on unmount and mark the session as interrupted so
+     the re-hydration step can display the partial response with an indicator. */
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        const sid = activeIdRef.current;
+        if (sid) { try { localStorage.setItem(_INTERRUPTED_KEY, sid); } catch {} }
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, []); // empty deps — cleanup runs exactly once, on unmount
 
   /* Load backend config (active model) */
   useEffect(() => {
@@ -272,7 +302,13 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
         const s = newSession(config?.active_model||null); list = [{...s, _loaded:true}];
       }
     }
-    setSessions(list);
+    // Merge: preserve messages for sessions the lazy-load already fetched.
+    // Without this, the bootstrap's setSessions wipes out loaded messages,
+    // causing a visible flash of the empty state before the second lazy-load fires.
+    setSessions(prev => list.map(s => {
+      const ex = prev.find(e => e.id === s.id);
+      return (ex && ex._loaded) ? { ...s, messages: ex.messages, _loaded: true } : s;
+    }));
     // Honor a requested session to open (e.g. after a move), else the newest.
     const initial = (openSessionId && list.find(s => s.id === openSessionId)) ? openSessionId : list[0].id;
     setActiveId(initial);
@@ -281,17 +317,47 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     setBootKey(k => k + 1);
   })(); }, []);
 
-  /* Lazy-load messages when a session is first opened, or when bootstrap replaces sessions */
+  /* Re-hydrate messages from the backend whenever the active session changes or the
+     bootstrap finishes.  The only guard is _loaded — we never skip the fetch because
+     messages happen to be present in in-memory state (which may be stale). */
   useEffect(() => { (async () => {
     if (!activeId) return;
+    if (fetchingRef.current === activeId) return; // fetch already in-flight for this session
     const s = sessions.find(x => x.id === activeId);
-    if (!s || s._loaded || (s.messages && s.messages.length)) return;
+    if (!s || s._loaded) return;
+    fetchingRef.current = activeId;
+    setLoadingMsgs(true);
     try {
-      const full = await fetch(`/api/sessions/${activeId}`).then(r=>r.json()).then(d=>d.session);
+      const resp = await fetch(`/api/sessions/${activeId}`);
+      if (!resp.ok) {
+        // 404 → session was deleted; any other error → surface it
+        setSessions(prev => prev.map(x => x.id===activeId
+          ? { ...x, _loaded: true, _notFound: resp.status === 404, messages: [] } : x));
+        if (resp.status !== 404) setError('Could not load conversation — check your connection.');
+        return;
+      }
+      const data = await resp.json();
+      let msgs = data?.session?.messages || [];
+      // If the user navigated away while this session was streaming, the backend
+      // persisted whatever tokens arrived.  Append the interrupted indicator so
+      // the cut-off is obvious without losing any content.
+      const interruptedId = (() => { try { return localStorage.getItem(_INTERRUPTED_KEY); } catch { return null; } })();
+      if (interruptedId === activeId && msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+        msgs = [
+          ...msgs.slice(0, -1),
+          { ...msgs[msgs.length - 1], content: msgs[msgs.length - 1].content + '\n\n*— interrupted*' },
+        ];
+        try { localStorage.removeItem(_INTERRUPTED_KEY); } catch {}
+      }
       setSessions(prev => prev.map(x => x.id===activeId
-        ? { ...x, messages: full?.messages || [], _loaded: true } : x));
+        ? { ...x, messages: msgs, _loaded: true, _notFound: false } : x));
     } catch {
-      setSessions(prev => prev.map(x => x.id===activeId ? { ...x, _loaded: true } : x));
+      setSessions(prev => prev.map(x => x.id===activeId
+        ? { ...x, _loaded: true, messages: [], _notFound: false } : x));
+      setError('Could not load conversation — check your connection.');
+    } finally {
+      if (fetchingRef.current === activeId) fetchingRef.current = null;
+      setLoadingMsgs(false);
     }
   })(); }, [activeId, bootKey]); // bootKey ensures re-run after bootstrap even if activeId is unchanged
 
@@ -577,7 +643,18 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
         flex:1, background:'var(--thread-bg)', padding:'32px 0',
         display:'flex', flexDirection:'column', gap:28,
       }}>
-        {msgs.length===0 && !streaming && (
+        {(loadingMsgs || session && !session._loaded) && !streaming && (
+          <div style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>
+              Loading conversation…
+            </p>
+          </div>
+        )}
+        {session?._loaded && session._notFound && !streaming && (
+          <EmptyState icon="chat" title="Conversation not found"
+            subtitle="this conversation no longer exists — start a new one below"/>
+        )}
+        {(!session || (session._loaded && !session._notFound && msgs.length===0)) && !streaming && (
           <EmptyState icon="chat"
             title={noModel?'Welcome':'New conversation'}
             subtitle={noModel?'type /setup to add a model':'send a message to begin'}/>
