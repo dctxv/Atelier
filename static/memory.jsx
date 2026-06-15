@@ -1089,7 +1089,28 @@ function MemorySurface() {
     }).catch(() => {});
   }, []);
 
+  // Silent background poll — only the three endpoints that change after extraction
+  const refreshDynamic = useCallback(() => {
+    if (document.visibilityState === 'hidden') return;
+    Promise.all([
+      fetch('/api/memory').then(r=>r.ok?r.json():{memories:[]}).catch(()=>({memories:[]})),
+      fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
+      fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
+    ]).then(([memData, qData, goalData]) => {
+      setMemories(memData.memories || memData.memory || []);
+      setQuestions(qData);
+      setReviewBadge((qData.open||[]).length);
+      setGoals(goalData.goals || []);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Poll every 6 seconds while the memory surface is mounted
+  useEffect(() => {
+    const id = setInterval(refreshDynamic, 6000);
+    return () => clearInterval(id);
+  }, [refreshDynamic]);
 
   // Snap to a valid tab for the current tier
   useEffect(() => {
@@ -1136,7 +1157,7 @@ function MemorySurface() {
       {/* Tab bar */}
       <div style={{ height:48, flexShrink:0, background:'var(--nav-bg)',
         borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center',
-        padding:'0 40px', gap:0, overflowX:'auto' }}>
+        justifyContent:'center', padding:'0 20px', gap:0, overflowX:'auto' }}>
         {allTabs.map(t => {
           const allowed = tabAllowed(t);
           const on = tab === t;
@@ -1145,8 +1166,9 @@ function MemorySurface() {
           if (!allowed) return null; // hide above-tier tabs entirely
           return (
             <button key={t} onClick={() => setTab(t)} style={{
-              padding:'0 16px 0 0', marginRight:4,
+              padding:'0 14px', margin:'0 2px',
               fontFamily:'var(--font-b)', fontSize:13, fontStyle:'italic',
+              textAlign:'center',
               color: on ? 'var(--text)' : 'var(--text-2)',
               borderBottom:`1.5px solid ${on ? 'var(--accent)' : 'transparent'}`,
               paddingBottom:10, marginBottom:-1,
