@@ -178,6 +178,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   // left untouched (project chats live only in the backend).
   const [sessions,   setSessions]   = useState(() => projectId ? [] : loadSessions());
   const [activeId,   setActiveId]   = useState(() => { if (projectId) return null; const s=loadSessions(); return s.length?s[0].id:null; });
+  const [bootKey,    setBootKey]    = useState(0); // increments when bootstrap finishes; triggers lazy-load re-check
   const [streaming,  setStreaming]   = useState(false);
   const [streamBuf,  setStreamBuf]  = useState('');
   const [streamSearch, setStreamSearch] = useState(null);
@@ -276,9 +277,11 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     const initial = (openSessionId && list.find(s => s.id === openSessionId)) ? openSessionId : list[0].id;
     setActiveId(initial);
     if (openSessionId && onConsumeOpen) onConsumeOpen();
+    // Signal that bootstrap is done so the lazy-load re-fires even if activeId didn't change.
+    setBootKey(k => k + 1);
   })(); }, []);
 
-  /* Lazy-load messages when a session is first opened */
+  /* Lazy-load messages when a session is first opened, or when bootstrap replaces sessions */
   useEffect(() => { (async () => {
     if (!activeId) return;
     const s = sessions.find(x => x.id === activeId);
@@ -290,7 +293,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     } catch {
       setSessions(prev => prev.map(x => x.id===activeId ? { ...x, _loaded: true } : x));
     }
-  })(); }, [activeId]);
+  })(); }, [activeId, bootKey]); // bootKey ensures re-run after bootstrap even if activeId is unchanged
 
   useEffect(() => { if (!projectId) saveSessions(sessions); }, [sessions]);
 

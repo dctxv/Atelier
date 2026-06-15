@@ -1089,7 +1089,28 @@ function MemorySurface() {
     }).catch(() => {});
   }, []);
 
+  // Silent background poll — only the three endpoints that change after extraction
+  const refreshDynamic = useCallback(() => {
+    if (document.visibilityState === 'hidden') return;
+    Promise.all([
+      fetch('/api/memory').then(r=>r.ok?r.json():{memories:[]}).catch(()=>({memories:[]})),
+      fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
+      fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
+    ]).then(([memData, qData, goalData]) => {
+      setMemories(memData.memories || memData.memory || []);
+      setQuestions(qData);
+      setReviewBadge((qData.open||[]).length);
+      setGoals(goalData.goals || []);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Poll every 6 seconds while the memory surface is mounted
+  useEffect(() => {
+    const id = setInterval(refreshDynamic, 6000);
+    return () => clearInterval(id);
+  }, [refreshDynamic]);
 
   // Snap to a valid tab for the current tier
   useEffect(() => {
