@@ -183,9 +183,14 @@ async def extract_memory(payload: dict):
     if memory_off or (not user_text and not assistant_text):
         return
 
-    # Tier gate: no extraction until the user has selected a memory tier
-    tier_selected = str(await config.get_setting("memory.tier_selected") or "false").lower() == "true"
-    if not tier_selected:
+    # Tier gate: block only if explicitly disabled.
+    # If never configured (None), auto-enable at basic so extraction works out of the box.
+    tier_raw = await config.get_setting("memory.tier_selected")
+    if tier_raw is None:
+        await config.set_setting("memory.tier_selected", "true")
+        await config.set_setting("memory.tier", "basic")
+        await config.set_setting("memory.depth", "basic")
+    elif str(tier_raw).lower() != "true":
         return
 
     source_kind = payload.get("source_kind", "chat")

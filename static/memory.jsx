@@ -1083,9 +1083,9 @@ function MemorySurface() {
       // try the dedicated settings route if available
       setLoading(false);
     });
-    // Load tier separately
-    fetch('/api/config/settings/memory.tier').then(r=>r.ok?r.json():null).then(d => {
-      if (d && d.value) setTier(d.value);
+    // Load tier from the dedicated endpoint (always returns a safe default; no 404)
+    fetch('/api/memory/tier').then(r=>r.ok?r.json():null).then(d => {
+      if (d && d.depth) setTier(d.depth);
     }).catch(() => {});
   }, []);
 
