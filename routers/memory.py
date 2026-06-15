@@ -56,6 +56,7 @@ async def set_memory_tier(request: Request):
         raise HTTPException(400, "depth must be basic, reflective, or prescient")
     await config.set_setting("memory.tier_selected", "true")
     await config.set_setting("memory.depth", depth)
+    await config.set_setting("memory.tier", depth)  # used by tier_allows() gating
     return {"ok": True, "depth": depth}
 
 
