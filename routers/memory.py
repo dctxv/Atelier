@@ -403,6 +403,54 @@ async def get_strands():
     return {"strands": result, "unstranded_count": unstranded_count}
 
 
+def _graph_atom(a: dict) -> dict:
+    """Trimmed atom shape for the constellation graph (visual grammar fields)."""
+    return {
+        "id":         a["id"],
+        "text":       a["text"],
+        "subject":    a.get("subject"),
+        "predicate":  a.get("predicate"),
+        "modality":   a.get("modality"),
+        "confidence": a.get("confidence"),
+        "salience":   a.get("salience"),
+        "pinned":     bool(a.get("pinned")),
+        "created_at": a.get("created_at"),
+    }
+
+
+@router.get("/memory/graph")
+async def get_memory_graph():
+    """Constellation graph payload — strands and their member atoms.
+
+    Strand membership is resolved server-side (predicate/subject bundles in
+    services.strands). Atoms claimed by no strand fall into 'unstranded' (Misc).
+    An atom may appear under multiple strands; the frontend renders one strand's
+    atoms at a time, so node ids stay unique within a view.
+    """
+    registry = await strands.load_registry()
+    if not registry:
+        from services.strands import _STATIC_BUNDLES
+        registry = _STATIC_BUNDLES
+
+    result_strands = []
+    stranded_ids: set[str] = set()
+    for s in registry:
+        atoms = await strands.atoms_for_strand(s["id"])
+        for a in atoms:
+            stranded_ids.add(a["id"])
+        result_strands.append({
+            "id":    s["id"],
+            "name":  s["name"],
+            "kind":  s.get("kind", "static"),
+            "atoms": [_graph_atom(a) for a in atoms],
+        })
+
+    all_atoms = await memory.list_atoms(limit=100_000)
+    unstranded = [_graph_atom(a) for a in all_atoms if a["id"] not in stranded_ids]
+
+    return {"strands": result_strands, "unstranded": unstranded}
+
+
 @router.patch("/memory/strands/{strand_id}")
 async def update_strand(strand_id: str, request: Request):
     """Rename a strand (user-editable name)."""
