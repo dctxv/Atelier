@@ -22,12 +22,19 @@ const TAB_MIN_TIER = {
 };
 
 // ── Style helpers ──────────────────────────────────────────────────────────
+// Full modality set the extractor emits (factual|opinion|desire|plan|
+// self_perception|hypothetical|commitment) plus the engine-internal
+// hypothesis/insight. 'hypothetical' is aliased to the hypothesis hue.
 const MODALITY_COLORS = {
-  desire:     'oklch(52% .12 40)',
-  plan:       'oklch(50% .12 200)',
-  commitment: 'oklch(48% .10 280)',
-  hypothesis: 'oklch(52% .10 320)',
-  insight:    'oklch(50% .12 160)',
+  factual:         'oklch(50% .03 250)',
+  opinion:         'oklch(54% .12 90)',
+  desire:          'oklch(52% .12 40)',
+  plan:            'oklch(50% .12 200)',
+  self_perception: 'oklch(52% .11 330)',
+  hypothetical:    'oklch(52% .10 320)',
+  commitment:      'oklch(48% .10 280)',
+  hypothesis:      'oklch(52% .10 320)',
+  insight:         'oklch(50% .12 160)',
 };
 
 function monoLabel(text, color, style) {
@@ -1070,15 +1077,19 @@ const STRAND_COLORS = {
   _unstranded:   '#9A8A78',  // taupe
 };
 const MODALITY_SHAPE = {
-  factual:    'ellipse',
-  desire:     'triangle',
-  plan:       'round-rectangle',
-  commitment: 'diamond',
-  hypothesis: 'hexagon',
-  insight:    'star',
+  factual:         'ellipse',
+  opinion:         'diamond',
+  desire:          'triangle',
+  plan:            'round-rectangle',
+  self_perception: 'star',
+  hypothetical:    'hexagon',
+  commitment:      'rectangle',
+  hypothesis:      'hexagon',
+  insight:         'pentagon',
 };
 const SHAPE_GLYPH = {
-  ellipse:'●', triangle:'▲', 'round-rectangle':'▮', diamond:'◆', hexagon:'⬡', star:'★',
+  ellipse:'●', triangle:'▲', 'round-rectangle':'▮', diamond:'◆',
+  hexagon:'⬡', star:'★', rectangle:'▬', pentagon:'⬠',
 };
 
 let _fcoseRegistered = false;
