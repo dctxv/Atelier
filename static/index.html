@@ -9,15 +9,12 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
-<<<<<<< Updated upstream
   <!-- Constellation graph (Memory → Graph tab). Loaded in dependency order. -->
   <script defer src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
-=======
   <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
->>>>>>> Stashed changes
   <script>
     (function(){
       try {
@@ -58,12 +55,8 @@
   var BUILD = Date.now();
   function loadNext(i) {
     if (i >= files.length) return;
-<<<<<<< Updated upstream
-    var url = files[i] + '?v=20260619a';
-=======
     var path = files[i];
     var url = path + '?v=' + BUILD;
->>>>>>> Stashed changes
     fetch(url)
       .then(function(r) {
         if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + path);
