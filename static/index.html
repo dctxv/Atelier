@@ -9,11 +9,15 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+<<<<<<< Updated upstream
   <!-- Constellation graph (Memory → Graph tab). Loaded in dependency order. -->
   <script defer src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+=======
+  <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+>>>>>>> Stashed changes
   <script>
     (function(){
       try {
@@ -48,16 +52,25 @@
     '/projects.jsx',
     '/app.jsx',
   ];
+  // Dev cache-busting: one fresh token per page load means every reload pulls
+  // the latest .jsx — no manual version bump to forget. (Production behind a
+  // CDN should pin this to a build hash instead.)
+  var BUILD = Date.now();
   function loadNext(i) {
     if (i >= files.length) return;
+<<<<<<< Updated upstream
     var url = files[i] + '?v=20260619a';
+=======
+    var path = files[i];
+    var url = path + '?v=' + BUILD;
+>>>>>>> Stashed changes
     fetch(url)
       .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + url);
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + path);
         return r.text();
       })
       .then(function(src) {
-        var compiled = Babel.transform(src, { presets: ['react', 'env'], filename: url }).code;
+        var compiled = Babel.transform(src, { presets: ['react', 'env'], filename: path }).code;
         eval(compiled);
         loadNext(i + 1);
       })

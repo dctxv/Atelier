@@ -209,6 +209,12 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   // Start true when localStorage has sessions so the first render shows "Loading…"
   // instead of flashing the empty state before the lazy-load effect fires.
   const [loadingMsgs,      setLoadingMsgs]      = useState(() => !projectId && loadSessions().length > 0);
+  // Voice input
+  const [voiceListening,     setVoiceListening]     = useState(false);
+  const [voiceTranscribing,  setVoiceTranscribing]  = useState(false);
+  const [voiceError,         setVoiceError]         = useState('');
+  const voiceRecRef       = useRef(null);
+  const voiceBaseRef      = useRef('');   // composer text at the moment recording started
 
   useEffect(() => { try { localStorage.setItem('atl_websearch', webSearch?'1':'0'); } catch {} }, [webSearch]);
   const threadRef   = useRef(null);
@@ -603,7 +609,59 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runCommand(filteredCommands[paletteIndex]); return; }
       if (e.key === 'Escape')    { e.preventDefault(); setPaletteDismissed(true); return; }
     }
+    // While recording you can still type into the composer, but Enter must not
+    // send mid-dictation — stop the mic first, then send.
+    if (voiceListening) {
+      if (e.key === 'Enter' && !e.shiftKey) e.preventDefault();
+      return;
+    }
     if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  }
+
+  /* ── Voice: live streaming transcription via MediaRecorder + Whisper ── */
+  function handleVoiceToggle() {
+    if (!window.AtelierVoice || !window.AtelierVoice.canRecord()) return;
+    if (voiceTranscribing) return;
+    if (voiceListening) {
+      // Stop recording → final transcription starts (show Transcribing…)
+      if (voiceRecRef.current) { voiceRecRef.current.stop(); voiceRecRef.current = null; }
+      setVoiceListening(false);
+      setVoiceTranscribing(true);
+      return;
+    }
+    setVoiceError('');
+    // Snapshot whatever's in the composer so interim updates don't clobber prior text.
+    voiceBaseRef.current = (composer || '').replace(/\s+$/, '');
+
+    window.AtelierVoice.recordLive({
+      onInterim(text) {
+        // Live running transcript — show in composer as it accumulates.
+        const base = voiceBaseRef.current;
+        setComposer(base ? base + ' ' + text : text);
+      },
+      onFinal(text) {
+        setVoiceTranscribing(false);
+        const base = voiceBaseRef.current;
+        if (!text) {
+          setVoiceError('Didn\'t catch that — try again');
+          setComposer(base);  // revert any interim text
+          return;
+        }
+        setComposer(base ? base + ' ' + text : text);
+      },
+      onError(err) {
+        setVoiceListening(false);
+        setVoiceTranscribing(false);
+        setComposer(voiceBaseRef.current);  // revert interim text on error
+        voiceRecRef.current = null;
+        if (err === 'not-allowed')            setVoiceError('Microphone access blocked');
+        else if (err === 'unsupported')       setVoiceError('Recording not supported in this browser');
+        else if (err === 'transcription-failed') setVoiceError('Transcription failed — try again');
+        else                                  setVoiceError('Voice input failed — try again');
+      },
+    }).then(ctrl => {
+      if (ctrl) { voiceRecRef.current = ctrl; setVoiceListening(true); }
+    });
   }
 
   /* Build rendered message list */
@@ -795,6 +853,11 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
             <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>{error}</p>
           </div>
         )}
+        {voiceError && (
+          <div style={{maxWidth:'50%',width:'100%',margin:'0 auto',padding:'0 60px'}}>
+            <p style={{fontFamily:'var(--font-m)',fontSize:11,color:'var(--text-3)',fontStyle:'italic'}}>{voiceError}</p>
+          </div>
+        )}
       </div>
 
       {/* Composer */}
@@ -904,6 +967,45 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                     onMove={moveTo}/>
                 )}
               </div>
+
+              {/* Voice input mic button */}
+              {(() => {
+                const canRec = !!(window.AtelierVoice && window.AtelierVoice.canRecord());
+                const active = voiceListening || voiceTranscribing;
+                return (
+                  <button
+                    onClick={handleVoiceToggle}
+                    disabled={!canRec || voiceTranscribing}
+                    title={
+                      !canRec ? 'Voice input needs a browser with microphone recording.'
+                        : voiceTranscribing ? 'Transcribing…'
+                        : voiceListening ? 'Stop dictating' : 'Dictate into the message'
+                    }
+                    style={{
+                      display:'flex',alignItems:'center',gap:5,padding:'3px 10px',
+                      border:`1px solid ${active?'var(--accent-bd)':'var(--border-2)'}`,
+                      borderRadius:10,
+                      background:active?'var(--accent-bg)':'transparent',
+                      cursor: canRec && !voiceTranscribing ? 'pointer' : 'default',
+                      transition:'all var(--t)',
+                      opacity: !canRec ? 0.4 : 1,
+                    }}>
+                    {voiceListening ? (
+                      <span style={{ width:7, height:7, borderRadius:'50%', display:'inline-block',
+                        flexShrink:0, background:'var(--accent)',
+                        animation:'breathe 1s ease-in-out infinite' }}/>
+                    ) : voiceTranscribing ? (
+                      <Pulse size={7}/>
+                    ) : (
+                      <Ico n="mic" size={11} color="var(--text-3)"/>
+                    )}
+                    <span style={{fontFamily:'var(--font-m)',fontSize:9.5,
+                      color:active?'var(--accent-tx)':'var(--text-3)'}}>
+                      {voiceListening ? 'Listening' : voiceTranscribing ? 'Transcribing…' : 'Voice'}
+                    </span>
+                  </button>
+                );
+              })()}
             </div>
 
             {/* Send / Stop */}

@@ -69,6 +69,9 @@ textarea, input { background: none; border: none; outline: none; color: inherit;
 .surface-enter{ animation: fadeUp .28s ease both; }
 .scroll       { overflow-y: auto; overflow-x: hidden; }
 .ph::placeholder { color: var(--text-q); opacity:.65; font-style:italic; }
+.mermaid-diagram { overflow-x: auto; }
+.mermaid-diagram svg { max-width: 100%; }
+.mermaid-fallback-note { font-family: var(--font-m); font-size: 10px; color: var(--text-3); margin-bottom: 6px; letter-spacing: .04em; }
 .shimmer {
   background: linear-gradient(90deg,var(--surface) 25%,var(--panel-bg) 50%,var(--surface) 75%);
   background-size:200% 100%; animation:shimmer 1.8s infinite; border-radius:3px;

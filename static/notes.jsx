@@ -10,7 +10,12 @@ function NotesSurface() {
   const [saving, setSaving]     = useState(false);
   const [loading, setLoading]   = useState(true);
   const [filterQuery, setFilterQuery] = useState('');
+  const [mode, setMode]         = useState('edit');     // 'edit' | 'preview'
+  const [sel, setSel]           = useState(null);       // { start, end } of textarea selection
+  const [cowriting, setCowriting] = useState(false);    // a cowrite stream is in flight
   const saveTimerRef = useRef(null);
+  const textareaRef  = useRef(null);
+  const cowriteAbort = useRef(null);
 
   useEffect(() => {
     fetch('/api/notes')
@@ -25,11 +30,14 @@ function NotesSurface() {
   }, []);
 
   function openNote(note) {
+    if (cowriting && cowriteAbort.current) cowriteAbort.current.abort();
     if (dirty) saveActive();
     setActive(note.id);
     setEditTitle(note.title || '');
     setEditContent(note.body || '');
     setDirty(false);
+    setSel(null);
+    setMode('edit');
   }
 
   function handleTitleChange(v) {
@@ -42,6 +50,110 @@ function NotesSurface() {
     setEditContent(v);
     setDirty(true);
     scheduleSave();
+  }
+
+  // Track the live textarea selection so an action can act on it even after
+  // the textarea loses focus (clicking a toolbar button blurs it).
+  function handleSelect(e) {
+    const ta = e.target;
+    if (ta.selectionStart !== ta.selectionEnd) {
+      setSel({ start: ta.selectionStart, end: ta.selectionEnd });
+    } else {
+      setSel(null);
+    }
+  }
+
+  // Persist an explicit body (used by cowrite completion to avoid stale-closure
+  // saves fighting the autosave debounce).
+  async function persistBody(noteId, title, body) {
+    try {
+      await fetch(`/api/notes/${noteId}`, {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ title, body }),
+      });
+      setNotes(prev => prev.map(n => n.id===noteId
+        ? {...n, title, body, updated_at:new Date().toISOString()}
+        : n));
+    } catch(_) {}
+  }
+
+  // ── Co-writer: stream an AI transformation into the note body ──
+  async function runCowrite(action) {
+    if (cowriting || !sel || !active) return;
+    const base = editContent;
+    const selected = base.slice(sel.start, sel.end).trim();
+    if (!selected) return;
+
+    // 'continue' appends after the selection; 'rewrite'/'tighten' replace it.
+    const insertStart = action === 'continue' ? sel.end : sel.start;
+    const insertEnd   = sel.end;
+    const before = base.slice(0, insertStart);
+    const after  = base.slice(insertEnd);
+
+    // Cancel any pending debounced save; the stream owns the body now.
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+
+    const controller = new AbortController();
+    cowriteAbort.current = controller;
+    setCowriting(true);
+    setMode('edit');
+
+    let acc = '';
+    const noteId = active;
+    try {
+      const resp = await fetch('/api/notes/cowrite', {
+        method:'POST', signal:controller.signal,
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ action, text: base.slice(sel.start, sel.end) }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let streaming = true;
+      while (streaming) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream:true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw === '[DONE]') { streaming = false; break; }
+          try {
+            const evt = JSON.parse(raw);
+            if (evt.error) { streaming = false; break; }
+            const delta = evt.choices?.[0]?.delta?.content;
+            if (delta) {
+              acc += delta;
+              setEditContent(before + acc + after);
+            }
+          } catch(_) {}
+        }
+      }
+    } catch(e) {
+      // AbortError is expected on Stop — partial text is kept.
+    } finally {
+      setSel(null);
+      setCowriting(false);
+      cowriteAbort.current = null;
+      if (acc) {
+        // Tokens arrived — the streamed body is authoritative; persist it.
+        const finalBody = before + acc + after;
+        setEditContent(finalBody);
+        setDirty(false);
+        persistBody(noteId, editTitle, finalBody);
+      }
+      // No tokens (immediate error / abort before first delta): leave the
+      // body and dirty flag exactly as they were before the cowrite.
+    }
+  }
+
+  function stopCowrite() {
+    if (cowriteAbort.current) cowriteAbort.current.abort();
   }
 
   function scheduleSave() {
@@ -193,7 +305,7 @@ function NotesSurface() {
       </div>
 
       {/* ── Editor ── */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', position:'relative' }}>
         {!active ? (
           <EmptyState icon="notes" title="Notes" subtitle="select or create a note"/>
         ) : (
@@ -213,6 +325,17 @@ function NotesSurface() {
                 )}
               </div>
               <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                {/* Edit / Preview toggle */}
+                <div style={{ display:'flex', border:'1px solid var(--border-2)', borderRadius:6, overflow:'hidden' }}>
+                  {['edit','preview'].map(m => (
+                    <button key={m} onClick={() => setMode(m)} style={{
+                      fontFamily:'var(--font-m)', fontSize:10, padding:'3px 9px',
+                      color: mode===m ? 'var(--accent-tx)' : 'var(--text-3)',
+                      background: mode===m ? 'var(--accent-bg)' : 'transparent',
+                      cursor:'pointer', letterSpacing:'.03em',
+                    }}>{m}</button>
+                  ))}
+                </div>
                 {saving && <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)' }}>saving…</span>}
                 {dirty && !saving && <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)' }}>unsaved</span>}
                 {!dirty && !saving && <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)' }}>saved</span>}
@@ -225,6 +348,40 @@ function NotesSurface() {
               </div>
             </div>
 
+            {/* ── Co-writer floating toolbar ── */}
+            {mode==='edit' && (sel || cowriting) && (
+              <div style={{
+                position:'absolute', top:56, left:'50%', transform:'translateX(-50%)',
+                zIndex:5, display:'flex', alignItems:'center', gap:4,
+                padding:'4px 5px', background:'var(--panel-bg)',
+                border:'1px solid var(--border-2)', borderRadius:8,
+              }}>
+                {cowriting ? (
+                  <button onClick={stopCowrite} style={{
+                    fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent-tx)',
+                    padding:'4px 12px', borderRadius:5, cursor:'pointer',
+                    background:'var(--accent-bg)', border:'1px solid var(--accent-bd)',
+                    display:'flex', alignItems:'center', gap:6,
+                  }}>
+                    <span style={{ width:7, height:7, borderRadius:1, background:'var(--accent-tx)', display:'inline-block' }}/>
+                    Stop
+                  </button>
+                ) : (
+                  [['continue','Continue'],['rewrite','Rewrite'],['tighten','Tighten']].map(([act,label]) => (
+                    <button key={act} onClick={() => runCowrite(act)} style={{
+                      fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-q)',
+                      padding:'4px 11px', borderRadius:5, cursor:'pointer',
+                      background:'transparent', border:'1px solid transparent',
+                      transition:'background var(--t), color var(--t)',
+                    }}
+                    onMouseEnter={e=>{ e.currentTarget.style.background='var(--accent-bg)'; e.currentTarget.style.color='var(--accent-tx)'; }}
+                    onMouseLeave={e=>{ e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--text-q)'; }}
+                    >{label}</button>
+                  ))
+                )}
+              </div>
+            )}
+
             {/* document */}
             <div className="scroll" style={{ flex:1, background:'var(--thread-bg)' }}>
               <div style={{ maxWidth:680, margin:'0 auto', padding:'40px 56px 60px' }}>
@@ -234,25 +391,40 @@ function NotesSurface() {
                   onChange={e=>handleTitleChange(e.target.value)}
                   onBlur={saveActive}
                   placeholder="Title"
+                  readOnly={cowriting}
                   style={{
                     width:'100%', fontFamily:'var(--font-d)', fontSize:36, fontWeight:500,
                     color:'var(--text)', lineHeight:1.1, letterSpacing:'.01em', marginBottom:24,
                     display:'block',
                   }}
                 />
-                {/* body */}
-                <textarea
-                  value={editContent}
-                  onChange={e=>handleContentChange(e.target.value)}
-                  onBlur={saveActive}
-                  placeholder="Begin writing…"
-                  style={{
-                    width:'100%', fontFamily:'var(--font-b)', fontSize:15.5, lineHeight:1.82,
-                    color:'var(--text)', resize:'none', minHeight:400,
-                    display:'block',
-                  }}
-                  rows={20}
-                />
+                {/* body — edit or rendered preview */}
+                {mode==='preview' ? (
+                  <div style={{ minHeight:400 }}>
+                    {(parseBlocks(editContent || '')).map((b,i) =>
+                      renderBlock(b, i, false, 15.5, 1.82, false))}
+                    {!editContent.trim() && (
+                      <span style={{ fontFamily:'var(--font-b)', fontSize:15.5, fontStyle:'italic',
+                        color:'var(--text-3)' }}>Nothing to preview yet.</span>
+                    )}
+                  </div>
+                ) : (
+                  <textarea
+                    ref={textareaRef}
+                    value={editContent}
+                    onChange={e=>handleContentChange(e.target.value)}
+                    onSelect={handleSelect}
+                    onBlur={saveActive}
+                    placeholder="Begin writing…"
+                    readOnly={cowriting}
+                    style={{
+                      width:'100%', fontFamily:'var(--font-b)', fontSize:15.5, lineHeight:1.82,
+                      color:'var(--text)', resize:'none', minHeight:400,
+                      display:'block', opacity: cowriting ? 0.7 : 1,
+                    }}
+                    rows={20}
+                  />
+                )}
               </div>
             </div>
           </>

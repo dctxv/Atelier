@@ -198,8 +198,100 @@ function parseBlocks(raw) {
   return blocks;
 }
 
+/* ── Mermaid diagram block ── */
+let _mermaidCounter = 0;
+let _mermaidReady = false;
+
+function MermaidBlock({ code }) {
+  const idRef = React.useRef(null);
+  if (!idRef.current) idRef.current = 'm' + (++_mermaidCounter);
+
+  const [svg, setSvg] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!window.mermaid) { setFailed(true); return; }
+    if (!_mermaidReady) {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        themeVariables: {
+          fontFamily: "'Lora', Georgia, serif",
+          primaryColor: '#EDE6D8',
+          primaryBorderColor: '#C4B09A',
+          lineColor: '#8A5A34',
+          primaryTextColor: '#18130E',
+          mainBkg: '#F6F1E7',
+          clusterBkg: '#EDE6D8',
+          edgeLabelBackground: '#F6F1E7',
+        },
+        flowchart: { curve: 'linear' },
+      });
+      _mermaidReady = true;
+    }
+    let cancelled = false;
+    mermaid.render(idRef.current, code)
+      .then(({ svg: svgStr }) => { if (!cancelled) setSvg(svgStr); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [code]);
+
+  const preStyle = {
+    fontFamily:'var(--font-m)', fontSize:12.5, lineHeight:1.65,
+    color:'var(--text)', background:'var(--surface)',
+    padding:'12px 16px', borderRadius:8,
+    overflowX:'auto', whiteSpace:'pre', margin:0,
+    border:'1px solid var(--border-2)',
+  };
+
+  if (failed) return (
+    <div>
+      <p className="mermaid-fallback-note">Diagram couldn't render — showing source.</p>
+      <pre style={preStyle}>{code}</pre>
+    </div>
+  );
+  if (!svg) return <pre style={{ ...preStyle, color:'var(--text-3)' }}>{code}</pre>;
+  return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+/* ── Code block (own component so its hooks stay isolated from renderBlock's .map) ── */
+function CodeBlock({ block, compact }) {
+  const [copied, setCopied] = React.useState(false);
+  function copyCode() {
+    navigator.clipboard.writeText(block.text || '').then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1800);
+    }).catch(() => {});
+  }
+  return (
+    <div style={{ marginBottom:compact?10:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+        {block.lang
+          ? <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+              letterSpacing:'.08em', textTransform:'uppercase' }}>{block.lang}</span>
+          : <span/>}
+        <button onClick={copyCode} style={{
+          fontFamily:'var(--font-m)', fontSize:8.5, color: copied ? 'var(--accent-tx)' : 'var(--text-3)',
+          padding:'2px 7px', border:'1px solid var(--border-2)', borderRadius:6,
+          cursor:'pointer', background:'transparent', display:'flex', alignItems:'center', gap:4,
+          transition:'color var(--t)',
+        }}>
+          <Ico n={copied ? 'check' : 'copy'} size={9} color="currentColor"/>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre style={{
+        fontFamily:'var(--font-m)', fontSize:12.5, lineHeight:1.65,
+        color:'var(--text)', background:'var(--surface)',
+        padding:compact?'10px 12px':'12px 16px', borderRadius:8,
+        overflowX:'auto', whiteSpace:'pre', margin:0,
+        border:'1px solid var(--border-2)',
+      }}>{block.text}</pre>
+    </div>
+  );
+}
+
 /* ── Block renderer ── */
-function renderBlock(block, idx, compact, bodyFs, bodyLh) {
+function renderBlock(block, idx, compact, bodyFs, bodyLh, streaming) {
   const mb = compact ? 10 : 13;
   switch (block.type) {
     case 'heading': {
@@ -251,38 +343,14 @@ function renderBlock(block, idx, compact, bodyFs, bodyLh) {
         </div>
       );
     case 'code': {
-      const [copied, setCopied] = React.useState(false);
-      function copyCode() {
-        navigator.clipboard.writeText(block.text || '').then(() => {
-          setCopied(true); setTimeout(() => setCopied(false), 1800);
-        }).catch(() => {});
-      }
-      return (
-        <div key={idx} style={{ marginBottom:compact?10:14 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
-            {block.lang
-              ? <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
-                  letterSpacing:'.08em', textTransform:'uppercase' }}>{block.lang}</span>
-              : <span/>}
-            <button onClick={copyCode} style={{
-              fontFamily:'var(--font-m)', fontSize:8.5, color: copied ? 'var(--accent-tx)' : 'var(--text-3)',
-              padding:'2px 7px', border:'1px solid var(--border-2)', borderRadius:6,
-              cursor:'pointer', background:'transparent', display:'flex', alignItems:'center', gap:4,
-              transition:'color var(--t)',
-            }}>
-              <Ico n={copied ? 'check' : 'copy'} size={9} color="currentColor"/>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+      if (block.lang === 'mermaid' && !streaming) {
+        return (
+          <div key={idx} style={{ marginBottom:compact?10:14 }}>
+            <MermaidBlock code={block.text} />
           </div>
-          <pre style={{
-            fontFamily:'var(--font-m)', fontSize:12.5, lineHeight:1.65,
-            color:'var(--text)', background:'var(--surface)',
-            padding:compact?'10px 12px':'12px 16px', borderRadius:8,
-            overflowX:'auto', whiteSpace:'pre', margin:0,
-            border:'1px solid var(--border-2)',
-          }}>{block.text}</pre>
-        </div>
-      );
+        );
+      }
+      return <CodeBlock key={idx} block={block} compact={compact} />;
     }
     case 'table':
       return (
@@ -390,7 +458,7 @@ function AiBlock({ text, model='', isLast, compact=false, streaming=false, times
             </p>
           )}
           {/* typed body blocks */}
-          {bodyBlocks.map((block, i) => renderBlock(block, i, compact, bodyFs, bodyLh))}
+          {bodyBlocks.map((block, i) => renderBlock(block, i, compact, bodyFs, bodyLh, streaming))}
           {/* streaming cursor */}
           {streaming && (
             <span style={{ display:'inline-block', width:2, height:18,
@@ -790,8 +858,135 @@ function EmptyState({ icon='more', title, subtitle }) {
   );
 }
 
+/* ── Voice input (browser SpeechRecognition) ── */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+window.AtelierVoice = {
+  isSupported: () => !!SR,
+  // continuous: keep listening until the consumer calls stop() — no pause-based
+  // auto-cutoff. Chrome still ends the session on long silence, so we transparently
+  // restart it (the keep-alive below) to give a chat-style "hold the floor" mic.
+  create({ onInterim, onFinal, onError, onEnd, lang = 'en-AU', continuous = true }) {
+    if (!SR) return null;
+    const rec = new SR();
+    rec.lang = lang;
+    rec.continuous = continuous;
+    rec.interimResults = true;
+
+    let finalText = '';
+    let stopped = false;   // true once the consumer calls stop() — gates keep-alive + final send
+
+    rec.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript + ' ';
+        else interim += r[0].transcript;
+      }
+      if (onInterim) onInterim((finalText + interim).trim());
+    };
+    rec.onerror = (e) => {
+      // 'no-speech'/'aborted' are benign in keep-alive mode — let onend restart.
+      if (e.error !== 'no-speech' && e.error !== 'aborted' && onError) onError(e.error);
+    };
+    rec.onend = () => {
+      if (continuous && !stopped) {
+        // Chrome ended on silence/timeout, not the user — restart to keep the floor.
+        try { rec.start(); return; } catch (_) { /* fall through to final */ }
+      }
+      if (onEnd) onEnd(finalText.trim());
+    };
+
+    // Controller: start/stop are compatible with the previous raw-rec call sites.
+    return {
+      start() { stopped = false; finalText = ''; try { rec.start(); } catch (_) {} },
+      stop()  { stopped = true;  try { rec.stop();  } catch (_) {} },
+      abort() { stopped = true;  try { rec.abort(); } catch (_) {} },
+    };
+  },
+
+  // ── MediaRecorder path (browser-independent: works in Comet/Brave/Firefox) ──
+  // Records audio until stop(), then hands the clip to onClip for server-side
+  // (Whisper) transcription. No live interim transcript — the clip is decoded
+  // after you stop — but it works in any browser, unlike SpeechRecognition.
+  canRecord: () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder),
+
+  async record({ onStart, onClip, onError }) {
+    if (!this.canRecord()) { if (onError) onError('unsupported'); return null; }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      if (onError) onError(e && e.name === 'NotAllowedError' ? 'not-allowed' : 'mic-error');
+      return null;
+    }
+    const mr = new MediaRecorder(stream);
+    const chunks = [];
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+      if (onClip) onClip(blob);
+    };
+    mr.start();
+    if (onStart) onStart();
+    return { stop() { try { mr.stop(); } catch (_) {} } };
+  },
+
+  // ── Live streaming path — sends accumulated audio every 3s for running interim
+  // transcript, then one final send on stop. Uses the same /api/voice/transcribe
+  // endpoint; each request gets the full accumulated blob (valid WebM headers).
+  async recordLive({ onInterim, onFinal, onError }) {
+    if (!this.canRecord()) { if (onError) onError('unsupported'); return null; }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      if (onError) onError(e && e.name === 'NotAllowedError' ? 'not-allowed' : 'mic-error');
+      return null;
+    }
+    const mr = new MediaRecorder(stream);
+    const allChunks = [];
+    let busy = false;   // skip interim if previous request still in-flight
+    let stopped = false;
+
+    async function sendAccumulated(isFinal) {
+      if ((!isFinal && busy) || allChunks.length === 0) return;
+      busy = true;
+      const blob = new Blob(allChunks, { type: mr.mimeType || 'audio/webm' });
+      try {
+        const fd = new FormData();
+        fd.append('audio', blob, 'clip.webm');
+        const resp = await fetch('/api/voice/transcribe', { method: 'POST', body: fd });
+        if (!resp.ok) throw new Error('transcription failed');
+        const data = await resp.json();
+        const text = (data.text || '').trim();
+        if (isFinal) { if (onFinal) onFinal(text); }
+        else         { if (onInterim) onInterim(text); }
+      } catch (_) {
+        if (isFinal && onError) onError('transcription-failed');
+      } finally {
+        busy = false;
+      }
+    }
+
+    mr.ondataavailable = (e) => {
+      if (e.data && e.data.size) {
+        allChunks.push(e.data);
+        if (!stopped) sendAccumulated(false);  // non-blocking interim; skipped if busy
+      }
+    };
+    mr.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      sendAccumulated(true);  // always send final regardless of busy
+    };
+    mr.start(3000);  // timeslice: ondataavailable fires every 3 s
+    return { stop() { stopped = true; try { mr.stop(); } catch (_) {} } };
+  },
+};
+
 Object.assign(window, {
   Ico, Pulse, ModelBadge, TurnDots, AiBlock, UserQuery, SectionLabel, Rule, EmptyState,
   WebSearchTrace, ClockCard, MathCard, UnitCard, StockCard, WeatherCard, LocalToolCard,
-  ProvenanceChips,
+  ProvenanceChips, parseBlocks, renderBlock,
 });
