@@ -37,9 +37,34 @@ _PREF_WORDS = frozenset({
     "hired", "fired", "married", "born", "called", "named",
 })
 
+# Self-disclosure verbs that signal a durable fact even WITHOUT a first-person
+# pronoun ("Prefers small groups", "Grew up in Dublin", "Struggles to say no").
+# Deliberately scoped to trait / preference / life-event verbs so impersonal
+# technical prose ("Mamba uses state-space models") does not match.
+_DISCLOSURE_RE = re.compile(
+    r"\b(prefers?|likes?|loves?|hates?|dislikes?|enjoys?|values?|fears?|"
+    r"believes?|feels?|struggles?|tends? to|grew up|raised|moved|quit|"
+    r"started|building|built|returned|studies|studying|lives?|living|"
+    r"works? as|identifies? as|diagnosed|always|never)\b",
+    re.IGNORECASE,
+)
+
+# A proper noun appearing mid-sentence (not the first token) is weak evidence of
+# a personal entity (a name, place, employer). Capped low so it can only nudge
+# content into the model-checked band, never auto-extract on its own.
+_MIDCAP_RE = re.compile(r"(?<=[a-z,;:]\s)[A-Z][a-zA-Z]{2,}")
+
 
 def _significance_score(user_text: str) -> float:
-    """Rule-based significance score in [0, 1] for extraction gating."""
+    """Rule-based significance score in [0, 1] for extraction gating.
+
+    First-person pronoun density is the strongest signal, but it is no longer
+    the *only* one: self-disclosure verbs and mid-sentence proper nouns let
+    impersonally-phrased disclosures ("Prefers small groups") reach at least the
+    ambiguous band (model-checked) instead of being hard-dropped. Weights are
+    tuned so impersonal technical/trivia prose stays below the 0.7 auto-extract
+    bar and is adjudicated by the cheap model.
+    """
     if not user_text:
         return 0.0
     text = user_text.strip()
@@ -48,9 +73,13 @@ def _significance_score(user_text: str) -> float:
     fp_density = len(_FP_RE.findall(text)) / max(1, len(words))
     fp_score = min(1.0, fp_density * 5)
     pref_score = 0.3 if any(w in text.lower() for w in _PREF_WORDS) else 0.0
+    disclosure_score = 0.2 if _DISCLOSURE_RE.search(text) else 0.0
+    entity_score = 0.08 if _MIDCAP_RE.search(text) else 0.0
     # Code/technical content is less likely to contain personal facts
     code_penalty = -0.2 if ("```" in text or re.search(r"\bdef \b|\bclass \b|\bimport \b", text)) else 0.0
-    return max(0.0, min(1.0, length_score * 0.3 + fp_score * 0.5 + pref_score + code_penalty))
+    return max(0.0, min(1.0,
+        length_score * 0.3 + fp_score * 0.5 + pref_score
+        + disclosure_score + entity_score + code_penalty))
 
 
 # ── Extraction v2 prompt ──────────────────────────────────────────────────────
