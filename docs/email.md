@@ -35,3 +35,4 @@ Why last and why careful: email is the feature where a bug isn't a wrong pixel, 
 - **Memory-grounded drafts** — drafts that cite what I actually know from memory. The hook (drafts use the big model) is there; the grounding is v2.
 - **Threading / conversation view.** v1 is a flat message list per account.
 - **OAuth flows in-app.** v1 takes an app password; a proper Gmail OAuth dance is a later addition.
+
