@@ -29,6 +29,8 @@ CORROB_CAP      = 0.98  # max stored confidence from corroboration
 # so deleting the derived atom never touches the underlying stated facts.
 INFERENCE_BASE_CONFIDENCE = 0.5   # lower than stated facts by default [VALIDATE]
 INFERENCE_DEDUP_THRESHOLD = 0.90  # similarity above which an inference is a dup [VALIDATE]
+INFERENCE_CORROB_STEP     = 0.34  # how fast a re-sighted inference gains confidence [VALIDATE]
+INFERENCE_CORROB_CAP      = 0.90  # an inference never reaches stated-fact certainty [VALIDATE]
 
 
 def _row_to_atom(r: dict) -> dict:
@@ -376,8 +378,10 @@ async def add_inference(
     vec = await embeddings.embed(text)
     dup_id = await _existing_inference(text, subject, predicate, object_val, vec)
     if dup_id:
-        await log_event(dup_id, "inference_reaffirmed", {"kind": kind})
-        return await get_atom(dup_id)
+        # Ex1/Ex6: a second sighting CORROBORATES — it raises confidence toward
+        # (but never to) stated-fact certainty, boosts salience, and merges the
+        # new evidence into provenance. Re-running stays idempotent (no new row).
+        return await _corroborate_inference(dup_id, list(source_atom_ids or []))
 
     meta = {
         "inference": True,
@@ -402,6 +406,31 @@ async def add_inference(
     await log_event(atom["id"], "inference_proposed",
                     {"kind": kind, "sources": list(source_atom_ids or [])})
     return atom
+
+
+async def _corroborate_inference(atom_id: str, new_sources: list[str]) -> dict | None:
+    """Second-sighting corroboration: raise an inference's confidence toward the
+    cap, bump salience, and union the new evidence into its provenance."""
+    existing = await get_atom(atom_id)
+    if not existing:
+        return None
+    old_conf = existing.get("confidence") or INFERENCE_BASE_CONFIDENCE
+    new_conf = min(INFERENCE_CORROB_CAP,
+                   old_conf + (INFERENCE_CORROB_CAP - old_conf) * INFERENCE_CORROB_STEP)
+    new_sal = min(5.0, (existing.get("salience") or 0.6) + 0.2)
+    meta = existing.get("meta") or {}
+    merged = list(dict.fromkeys((meta.get("source_atom_ids") or []) + (new_sources or [])))
+    meta["source_atom_ids"] = merged
+    meta["sightings"] = int(meta.get("sightings", 1)) + 1
+    await db.execute(
+        "UPDATE memory_atom SET confidence=?, salience=?, last_used_at=?, meta=? WHERE id=?",
+        (new_conf, new_sal, db.now(), json.dumps(meta), atom_id),
+    )
+    await db.bump_mutation_seq()
+    await log_event(atom_id, "inference_corroborated",
+                    {"old_conf": old_conf, "new_conf": new_conf,
+                     "sightings": meta["sightings"]})
+    return await get_atom(atom_id)
 
 
 async def confirm_inference(atom_id: str) -> bool:
@@ -474,15 +503,21 @@ async def provenance(atom_id: str) -> list[dict]:
     ]
 
 
-async def surface_contradiction(atom_ids: list[str], prompt_text: str) -> str | None:
-    """Surface a detected contradiction for reconciliation (do NOT auto-resolve).
-    Idempotent: if an open question already covers this atom set, returns None."""
+async def surface_contradiction(atom_ids: list[str], prompt_text: str,
+                                kind: str = "contradiction") -> str | None:
+    """Surface a detected conflict for the user to reconcile (do NOT auto-resolve).
+
+    kind='contradiction' is a logical conflict (Sydney vs Melbourne);
+    kind='tension' is a tradeoff to make visible, not resolve (the motivating
+    work that also carries a health cost — Ex6). Idempotent: if an open question
+    already covers this atom set, returns None.
+    """
     atom_ids = sorted(set(atom_ids or []))
     if len(atom_ids) < 2:
         return None
     key = json.dumps(atom_ids)
     existing = await db.fetchone(
-        "SELECT id FROM memory_question WHERE kind='contradiction' "
+        "SELECT id FROM memory_question WHERE kind IN ('contradiction','tension') "
         "AND status='open' AND atom_ids=?", (key,),
     )
     if existing:
@@ -491,6 +526,7 @@ async def surface_contradiction(atom_ids: list[str], prompt_text: str) -> str | 
     await db.execute(
         "INSERT INTO memory_question(id, kind, atom_ids, prompt_text, status, created_at) "
         "VALUES(?,?,?,?,?,?)",
-        (qid, "contradiction", key, prompt_text, "open", db.now()),
+        (qid, kind if kind in ("contradiction", "tension") else "contradiction",
+         key, prompt_text, "open", db.now()),
     )
     return qid

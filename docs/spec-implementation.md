@@ -162,9 +162,35 @@ provenance + deletability (deleting an inference leaves source facts intact),
 retrievable), idempotency, reject-suppresses, and idempotent contradiction
 surfacing. 7/7.
 
+**W2 enhancements (calibrated against Clay's six worked examples):**
+- **Confidence accrual (Ex1/Ex6).** A second sighting of an inference no longer
+  just dedups — `add_inference` → `_corroborate_inference` raises confidence
+  toward `INFERENCE_CORROB_CAP` (never to stated-fact certainty), bumps salience,
+  merges the new evidence into provenance, and tracks a `sightings` count. "Low →
+  medium, no longer speculative."
+- **Reading what wasn't said (Ex2, the headline).** New background job
+  `infer_turn` reads the *raw turn* (not just atoms) to catch trigger words
+  ("again" → a pattern) and absences/framing ("worth it", no complaint →
+  motivation). Enqueued by `extraction.extract_memory` only for significant chat
+  turns that produced atoms (cost-bounded), provenance anchored to those atoms,
+  first-sighting confidence forced low. Config: `turn_inference_enabled`,
+  `turn_inference_min_signif`, `turn_inference_max_new` (all `[VALIDATE]`).
+- **Transferable principles (Ex3) + tensions (Ex6).** The corpus prompt now emits
+  `principle` (a generalisation distilled from a specific decision) and `tension`
+  (a tradeoff to make visible, e.g. motivating work that carries a health cost) —
+  distinct from logical `contradiction`. `surface_contradiction(kind=…)` records
+  tensions as their own `memory_question` kind; the router lists both.
+
+Mapping to the examples: Ex1 corroboration ✓, Ex2 unsaid/absence ✓ (job +
+low-confidence first sighting), Ex3 evolution-not-overwrite ✓ (extraction
+supersedes; W2 flags) + principle ✓, Ex4 multi-modality/commitment ✓ (existing),
+Ex5 restraint ✓ (gates + ≥2 evidence), Ex6 confidence-rise-on-second-sighting ✓
++ tension surfacing ✓.
+
 **Still owed for W2's full acceptance (need a model):** the inference-*quality*
 fixtures (does the cheap model produce the expected derived atoms and avoid
-hallucinated ones) — runs where a model endpoint exists.
+hallucinated ones, including the "again"/absence reads) — runs where a model
+endpoint exists. Tests now cover 10 deterministic checks.
 
 > **⚠ Flagged disagreement (per the spec's "flag, don't silently reconcile" rule).**
 > The pre-existing prescient layer mints `modality='insight'` atoms at
@@ -174,6 +200,20 @@ hallucinated ones) — runs where a model endpoint exists.
 > pass and does **not** retrofit the prescient insights (they're gated behind the
 > `prescient` tier, off by default). Recommend a follow-up to route prescient
 > insights through the same proposed lifecycle. Not silently changed.
+
+---
+
+## 4a. W7 surface triage — DECISION (confirmed with Clay)
+
+| Surface | Call | Rationale |
+|---------|------|-----------|
+| **Tasks** | **KEEP** | Becomes the spine of the W5 commitment layer; commitment→task plumbing already exists. |
+| **Projects** | **CUT** | No named daily use. |
+| **Email** | **CUT** | No named daily use. |
+| **Export** | **CUT** | No named daily use. |
+
+Cuts will be executed as a dedicated change (clean removal, no broken
+routes/JSX) per the W7 acceptance gate, sequenced with W5.
 
 ---
 

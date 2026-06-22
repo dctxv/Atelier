@@ -77,11 +77,13 @@ async def run():
         "confirmed inference did not become retrievable"
     ok("confirmed inference becomes believed + retrievable, still tagged insight")
 
-    # ── 4. Idempotency ────────────────────────────────────────────────────────
+    # ── 4. Idempotency + confidence accrual (Ex1/Ex6) ─────────────────────────
+    a3 = await _seed_fact("Clay was online coding at 2:45am on Saturday")
     before = await db.fetchone(
         "SELECT COUNT(*) AS n FROM memory_atom WHERE modality='insight'")
+    conf_before = (await memory.get_atom(inf2["id"]))["confidence"]
     dup = await memory.add_inference(
-        "Clay tends to work late at night", source_atom_ids=src_ids,
+        "Clay tends to work late at night", source_atom_ids=[a1["id"], a3["id"]],
         kind="pattern", subject="user", predicate="work_rhythm", object_val="night",
     )
     after = await db.fetchone(
@@ -89,6 +91,14 @@ async def run():
     assert dup["id"] == inf2["id"], "re-inferring created a different atom"
     assert before["n"] == after["n"], "re-running the pass duplicated an inference"
     ok("re-inferring the same thing is idempotent (no duplicate)")
+
+    assert dup["confidence"] > conf_before, \
+        f"confidence did not rise on re-sighting ({conf_before} -> {dup['confidence']})"
+    assert dup["confidence"] <= memory.INFERENCE_CORROB_CAP
+    prov_ids = {p["id"] for p in await memory.provenance(inf2["id"])}
+    assert a3["id"] in prov_ids, "new evidence not merged into provenance"
+    assert (dup.get("meta") or {}).get("sightings", 0) >= 2
+    ok("second sighting corroborates: confidence rises, evidence merges (Ex1/Ex6)")
 
     # ── 5. Reject suppresses ──────────────────────────────────────────────────
     inf3 = await memory.add_inference(
@@ -114,10 +124,30 @@ async def run():
     assert row["kind"] == "contradiction" and row["status"] == "open"
     ok("contradiction surfaced once for reconciliation (no auto-resolve)")
 
+    # ── 7. Tension (tradeoff, not logical conflict) surfaces distinctly (Ex6) ──
+    t1 = await _seed_fact("Clay feels stressed lately", predicate="feels")
+    t2 = await _seed_fact("Clay attributes stress to late nights on Atelier",
+                          predicate="attributes_stress_to")
+    tqid = await memory.surface_contradiction(
+        [t1["id"], t2["id"]], "Motivating work also carries a health cost.",
+        kind="tension")
+    assert tqid is not None
+    trow = await db.fetchone("SELECT kind FROM memory_question WHERE id=?", (tqid,))
+    assert trow["kind"] == "tension"
+    ok("tension surfaced as a distinct kind (tradeoff, not auto-resolved)")
+
+    # ── 8. Per-turn 'read the unsaid' job is registered (Ex2 plumbing) ─────────
+    from workers import memory_inference  # noqa: F401 (registers handlers)
+    from workers import jobs
+    assert "infer_turn" in jobs._handlers, "infer_turn job not registered"
+    assert "infer_memory" in jobs._handlers, "infer_memory job not registered"
+    ok("per-turn + corpus inference jobs are registered")
+
     # ── cleanup test_run + inference atoms ────────────────────────────────────
-    for aid in (a1["id"], a2["id"], c1["id"], c2["id"], inf2["id"], inf3["id"]):
+    for aid in (a1["id"], a2["id"], a3["id"], c1["id"], c2["id"],
+                t1["id"], t2["id"], inf2["id"], inf3["id"]):
         await memory.delete_atom(aid)
-    await db.execute("DELETE FROM memory_question WHERE id=?", (qid,))
+    await db.execute("DELETE FROM memory_question WHERE id IN (?,?)", (qid, tqid))
 
     print(f"\nAll W2 inference tests passed! ({len(passed)} checks)")
 
