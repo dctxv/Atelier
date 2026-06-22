@@ -232,6 +232,30 @@ reuses the W2 lifecycle.
 
 ---
 
+### W3 — Active / reflexive memory surfacing ✅
+Memory now *pushes* (quietly), not just waits to be browsed. W6 was the pull/review
+surface; W3 is the proactive layer on top of the same W2 data.
+
+- **`workers/memory_inference.py`** — added a `connection` inference kind (a
+  non-obvious link between facts from different areas) to the corpus prompt.
+- **`routers/memory.py`** — `GET /memory/surfacing`: a quiet, ranked digest
+  blending newest/highest-confidence proposed inferences with open
+  contradictions/tensions; capped (`limit`, default 4) but reports the true
+  `total` for the nav signal. Higher-confidence inferences rank first.
+- **`static/shell.jsx` + `static/app.jsx`** — a subtle dot on the Memory rail
+  icon when `surfacing.total > 0`. Polls slowly (45s), pauses when the tab is
+  hidden, re-checks on surface change — informs without nagging.
+- **`static/memory.jsx`** — an **Active memory** panel at the top of Overview
+  (renders only when there's something to say) showing up to 3 items with inline
+  Confirm/Reject for inferences and a "Reconcile in Review" link for conflicts,
+  plus a "+N more in Review" affordance. JSX verified via bundled Babel.
+
+**Tests** — `scripts/test_surfacing.py` (DB-backed, no model, 4/4): blends
+inferences + conflicts into a total, capped/quiet, confidence-ranked, conflicts
+carry their type. All five pure-Python/DB suites green together.
+
+---
+
 ## 4a. W7 surface triage — DECISION (confirmed with Clay)
 
 | Surface | Call | Rationale |

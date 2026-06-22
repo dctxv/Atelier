@@ -14,7 +14,8 @@ const NAV = [
   { id:'settings',  icon:'gear'     },
 ];
 
-function LeftRail({ active, onNav, theme, onTheme }) {
+function LeftRail({ active, onNav, theme, onTheme, badges }) {
+  badges = badges || {};
   return (
     <div style={{
       width:54, flexShrink:0, height:'100%',
@@ -34,15 +35,22 @@ function LeftRail({ active, onNav, theme, onTheme }) {
         width:'100%', padding:'0 7px' }}>
         {NAV.map(item => {
           const on = item.id === active;
+          const hasBadge = (badges[item.id] || 0) > 0;
           return (
             <button key={item.id} title={item.id} onClick={() => onNav(item.id)} style={{
               width:'100%', height:40, borderRadius:8, display:'grid', placeItems:'center',
               background: on ? 'var(--accent-bg)' : 'transparent',
               border: `1px solid ${on ? 'var(--accent-bd)' : 'transparent'}`,
               color: on ? 'var(--accent-tx)' : 'var(--text-3)',
-              transition:'all var(--t)',
+              transition:'all var(--t)', position:'relative',
             }}>
               <Ico n={item.icon} size={15} color="currentColor"/>
+              {hasBadge && (
+                <span title={`${badges[item.id]} to review`} style={{
+                  position:'absolute', top:7, right:9, width:6, height:6, borderRadius:'50%',
+                  background:'var(--accent)', boxShadow:'0 0 0 2px var(--surface)',
+                }}/>
+              )}
             </button>
           );
         })}

@@ -60,6 +60,22 @@ function App() {
 
   const toggleTheme=()=>setTheme(t=>t==='natural'?'mono':'natural');
 
+  /* W3: quiet proactive memory signal — a subtle dot on the Memory rail when
+     there are inferences/conflicts worth a look. Polls slowly; never nags.
+     Re-checks when leaving the memory surface (the user just acted on items). */
+  const [memBadge, setMemBadge] = useState(0);
+  useEffect(()=>{
+    let alive = true;
+    const check = () => {
+      if (document.visibilityState === 'hidden') return;
+      fetch('/api/memory/surfacing').then(r=>r.ok?r.json():null)
+        .then(d=>{ if (alive && d) setMemBadge(d.total||0); }).catch(()=>{});
+    };
+    check();
+    const id = setInterval(check, 45000);
+    return ()=>{ alive = false; clearInterval(id); };
+  },[surface]);
+
   /* A conversation was moved between the main chat and a project. Follow it. */
   function handleMoved(sessionId, toProjectId){
     if (toProjectId){ setProjectsTarget({ projectId: toProjectId, sessionId }); setSurface('projects'); }
@@ -82,7 +98,8 @@ function App() {
 
   return (
     <div style={{display:'flex',height:'100%',width:'100%',overflow:'hidden'}}>
-      <LeftRail active={surface} onNav={setSurface} theme={theme} onTheme={toggleTheme}/>
+      <LeftRail active={surface} onNav={setSurface} theme={theme} onTheme={toggleTheme}
+        badges={{ memory: memBadge }}/>
       <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
         {renderSurface()}
       </div>

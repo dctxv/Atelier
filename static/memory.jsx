@@ -1088,6 +1088,63 @@ function ScoreboardTable({ scoreboard }) {
   );
 }
 
+// ── Active memory panel (W3: quiet proactive surfacing) ───────────────────────
+function ActiveMemoryPanel({ onTabSwitch }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+
+  const load = useCallback(() => {
+    fetch('/api/memory/surfacing').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { setItems(d.items || []); setTotal(d.total || 0); }
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function actInference(id, action) {
+    await fetch(`/api/memory/review/${id}/${action}`, { method:'POST' });
+    load();
+  }
+
+  if (!items.length) return null;  // quiet by default — nothing to say, say nothing
+
+  const kindLabel = { contradiction:'Conflict', tension:'Tension' };
+
+  return (
+    <div style={{ marginBottom:24, padding:'16px 20px', background:'var(--accent-bg)',
+      border:'1px solid var(--accent-bd)', borderRadius:10 }}>
+      <div style={{ display:'flex', alignItems:'center', marginBottom:12 }}>
+        <SectionLabel>Active memory</SectionLabel>
+        {total > items.length && (
+          <button onClick={() => onTabSwitch('review')} style={{ marginLeft:'auto', cursor:'pointer' }}>
+            {monoLabel(`+${total - items.length} more in Review`, 'var(--accent-tx)')}
+          </button>
+        )}
+      </div>
+      {items.map(it => (
+        <div key={it.id} style={{ padding:'10px 0', borderBottom:'1px solid var(--rule)' }}>
+          <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:6 }}>
+            {monoLabel(it.type === 'inference' ? (it.kind || 'inferred') : (kindLabel[it.type] || it.type),
+              it.type === 'inference' ? MODALITY_COLORS.insight : 'oklch(52% .15 25)')}
+            {it.confidence != null && monoLabel(`${Math.round(it.confidence*100)}%`)}
+          </div>
+          <p style={{ fontFamily:'var(--font-b)', fontSize:13, color:'var(--text)',
+            lineHeight:1.55, marginBottom:8 }}>{it.text}</p>
+          {it.type === 'inference' ? (
+            <div style={{ display:'flex', gap:8 }}>
+              <GhostBtn onClick={() => actInference(it.id, 'accept')}
+                style={{ color:'var(--accent)', borderColor:'var(--accent-bd)' }}>Confirm</GhostBtn>
+              <GhostBtn onClick={() => actInference(it.id, 'reject')}
+                style={{ color:'oklch(52% .15 25)', borderColor:'oklch(70% .10 25)' }}>Reject</GhostBtn>
+            </div>
+          ) : (
+            <GhostBtn onClick={() => onTabSwitch('review')}>Reconcile in Review</GhostBtn>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Overview tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
   const openQCount = (questions.open || []).length;
@@ -1131,6 +1188,9 @@ function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
             </>
           )}
         </div>
+
+        {/* Active memory — quiet proactive surfacing (W3) */}
+        <ActiveMemoryPanel onTabSwitch={onTabSwitch}/>
 
         {/* Card grid */}
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',

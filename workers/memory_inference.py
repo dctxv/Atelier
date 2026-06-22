@@ -68,7 +68,7 @@ single fact. Do NOT invent anything a fact does not support.
 Return ONLY a JSON array (no prose, no code fences). Each item:
 {
   "kind": "pattern" | "implied_preference" | "evolution" | "principle"
-        | "contradiction" | "tension",
+        | "connection" | "contradiction" | "tension",
   "text": "<one concise third-person inference, e.g. 'Clay tends to work late at night'>",
   "subject": "<entity, lowercase; 'user' for the user>",
   "predicate": "<short relationship, lowercase>",
@@ -85,6 +85,8 @@ Rules:
 - kind=principle: a TRANSFERABLE generalisation distilled from a specific
   decision/event (e.g. from "dropped GLM-5.1 because real-world regressed" infer
   "weights real-world performance over benchmarks"). These are the most valuable.
+- kind=connection: a NON-OBVIOUS link between facts from different areas of the
+  user's life/work that they may not have connected themselves.
 - kind=contradiction: two+ facts that genuinely, logically conflict. evidence =
   the conflicting indices. Describe the conflict. Do NOT pick a winner.
 - kind=tension: two+ facts that pull against each other as a TRADEOFF (not a

@@ -623,6 +623,43 @@ async def reject_inferred(atom_id: str):
     return {"ok": True}
 
 
+# ── W3: active / reflexive surfacing ──────────────────────────────────────────
+
+@router.get("/memory/surfacing")
+async def get_surfacing(limit: int = 4):
+    """A QUIET, ranked digest of what memory wants to show the user proactively:
+    newly-formed inferences (incl. connections) + open contradictions/tensions.
+    Drives the subtle nav signal and the Overview 'Active memory' panel — it
+    informs, it does not nag (capped, highest-signal first)."""
+    proposed = await memory.list_inferences(status="proposed", limit=50)
+    proposed.sort(key=lambda a: ((a.get("confidence") or 0), a.get("created_at") or 0),
+                  reverse=True)
+
+    contra_rows = await db.fetchall(
+        "SELECT id, kind, atom_ids, prompt_text, created_at FROM memory_question "
+        "WHERE kind IN ('contradiction','tension') AND status='open' "
+        "ORDER BY created_at DESC LIMIT 50"
+    )
+
+    items: list[dict] = []
+    for a in proposed:
+        items.append({
+            "id": a["id"], "type": "inference",
+            "kind": a.get("inference_kind", "inferred"),
+            "text": a["text"], "confidence": a.get("confidence"),
+            "provenance": a.get("provenance", []),
+        })
+    for q in contra_rows:
+        items.append({
+            "id": q["id"], "type": q["kind"], "kind": q["kind"],
+            "text": q["prompt_text"], "created_at": q["created_at"],
+        })
+
+    total = len(proposed) + len(contra_rows)
+    return {"items": items[:limit], "total": total,
+            "counts": {"inferences": len(proposed), "conflicts": len(contra_rows)}}
+
+
 # ── W6: extraction visibility & steering ──────────────────────────────────────
 
 @router.get("/memory/review")
