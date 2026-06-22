@@ -21,6 +21,15 @@ DEDUP_THRESHOLD = 0.92
 CORROB_STEP     = 0.3   # diminishing-returns corroboration step
 CORROB_CAP      = 0.98  # max stored confidence from corroboration
 
+# ── W2: inferential memory ────────────────────────────────────────────────────
+# A *derived* atom is a distinct class: modality='insight', type='inference',
+# minted at status='proposed' so it is INVISIBLE to retrieval (Visibility Law —
+# an inference is not "believed" until the user has seen and confirmed it). Its
+# provenance (the source atoms it was inferred from) lives in meta.source_atom_ids
+# so deleting the derived atom never touches the underlying stated facts.
+INFERENCE_BASE_CONFIDENCE = 0.5   # lower than stated facts by default [VALIDATE]
+INFERENCE_DEDUP_THRESHOLD = 0.90  # similarity above which an inference is a dup [VALIDATE]
+
 
 def _row_to_atom(r: dict) -> dict:
     return {
@@ -101,6 +110,7 @@ async def add_atom(
     valid_until: int | None = None,
     temporal_raw: str | None = None,
     meta: dict | None = None,
+    status: str = "active",
 ) -> dict:
     text = (text or "").strip()
     if not text:
@@ -140,7 +150,7 @@ async def add_atom(
                 ts, ts, int(pinned), project_id,
                 subject, predicate, predicate_category, object_val,
                 polarity, intensity, modality, confidence, vf, valid_until,
-                temporal_raw, "active", meta_str,
+                temporal_raw, status, meta_str,
             ),
         )
         rid = conn.execute("SELECT rowid FROM memory_atom WHERE id=?", (atom_id,)).fetchone()[0]
@@ -306,3 +316,181 @@ async def count() -> int:
         "SELECT COUNT(*) AS n FROM memory_atom WHERE status='active' OR status IS NULL"
     )
     return row["n"] if row else 0
+
+
+# ── W2: inferential memory — derived atoms with provenance ────────────────────
+
+async def _existing_inference(text: str, subject, predicate, object_val,
+                              vec: list[float]) -> str | None:
+    """Idempotency: return the id of an existing insight atom that already says
+    this (same subject/predicate/object, or vector-similar), else None. Re-running
+    the inference pass must not spawn duplicate inferences."""
+    if subject and predicate:
+        rows = await db.fetchall(
+            "SELECT id FROM memory_atom WHERE modality='insight' "
+            "AND status IN ('proposed','active') "
+            "AND subject=? AND predicate=? "
+            "AND (object IS ? OR LOWER(object)=LOWER(?)) LIMIT 1",
+            (subject, predicate, object_val, object_val or ""),
+        )
+        if rows:
+            return rows[0]["id"]
+    # Vector-similarity fallback over insight atoms only.
+    rows = await db.fetchall(
+        "SELECT m.id AS id, v.distance AS distance FROM "
+        "(SELECT rowid, distance FROM memory_vec WHERE embedding MATCH ? ORDER BY distance LIMIT 5) v "
+        "JOIN memory_atom m ON m.rowid = v.rowid "
+        "WHERE m.modality='insight' AND m.status IN ('proposed','active') "
+        "ORDER BY v.distance LIMIT 1",
+        (db.serialize_f32(vec),),
+    )
+    if rows and (1.0 - rows[0]["distance"]) >= INFERENCE_DEDUP_THRESHOLD:
+        return rows[0]["id"]
+    return None
+
+
+async def add_inference(
+    text: str,
+    source_atom_ids: list[str],
+    kind: str = "pattern",
+    subject: str | None = None,
+    predicate: str | None = None,
+    object_val: str | None = None,
+    confidence: float | None = None,
+    project_id: str | None = None,
+) -> dict | None:
+    """Mint a *derived* atom (Visibility Law: status='proposed', invisible to
+    retrieval until confirmed). Provenance is the list of source atom ids it was
+    inferred from. Idempotent: returns the existing inference if one already
+    asserts the same thing, without creating a duplicate.
+
+    Returns the atom dict, or None if `text` was empty.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    subject   = (subject or "").lower().strip() or None
+    predicate = (predicate or "").lower().strip() or None
+    conf = INFERENCE_BASE_CONFIDENCE if confidence is None else max(0.05, min(0.9, confidence))
+
+    vec = await embeddings.embed(text)
+    dup_id = await _existing_inference(text, subject, predicate, object_val, vec)
+    if dup_id:
+        await log_event(dup_id, "inference_reaffirmed", {"kind": kind})
+        return await get_atom(dup_id)
+
+    meta = {
+        "inference": True,
+        "inference_kind": kind,
+        "source_atom_ids": list(source_atom_ids or []),
+    }
+    atom = await add_atom(
+        text=text,
+        type_="inference",
+        source_kind="inference",
+        salience=0.6,
+        dedup=False,                 # inference dedup is handled above, not vs facts
+        project_id=project_id,
+        subject=subject,
+        predicate=predicate,
+        object_val=object_val,
+        modality="insight",
+        confidence=conf,
+        meta=meta,
+        status="proposed",           # ← unbelieved until reviewed
+    )
+    await log_event(atom["id"], "inference_proposed",
+                    {"kind": kind, "sources": list(source_atom_ids or [])})
+    return atom
+
+
+async def confirm_inference(atom_id: str) -> bool:
+    """Promote a proposed inference to believed (status='active'). It keeps its
+    insight modality (and the (inferred) tag) — it is now a shown-and-confirmed
+    inference, distinct from a directly-stated fact."""
+    row = await db.fetchone("SELECT id, status FROM memory_atom WHERE id=?", (atom_id,))
+    if not row:
+        return False
+    await db.execute("UPDATE memory_atom SET status='active' WHERE id=?", (atom_id,))
+    await db.bump_mutation_seq()
+    await log_event(atom_id, "inference_confirmed", None)
+    from .retrieval import _ensure_knn_cache
+    asyncio.create_task(_ensure_knn_cache())
+    return True
+
+
+async def reject_inference(atom_id: str) -> bool:
+    """Reject a proposed inference. It is suppressed (status='rejected',
+    confidence 0) — kept for audit and as signal to tighten future inference."""
+    row = await db.fetchone("SELECT id FROM memory_atom WHERE id=?", (atom_id,))
+    if not row:
+        return False
+    await db.execute(
+        "UPDATE memory_atom SET status='rejected', confidence=0.0 WHERE id=?", (atom_id,)
+    )
+    await db.bump_mutation_seq()
+    await log_event(atom_id, "inference_rejected", None)
+    return True
+
+
+async def list_inferences(status: str = "proposed", limit: int = 100) -> list[dict]:
+    """Inferences at a given lifecycle status, each with resolved provenance."""
+    rows = await db.fetchall(
+        "SELECT * FROM memory_atom WHERE modality='insight' AND status=? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (status, limit),
+    )
+    out: list[dict] = []
+    for r in rows:
+        a = _row_to_atom(r)
+        meta = a.get("meta") or {}
+        a["inference_kind"] = meta.get("inference_kind", "inferred")
+        a["source_atom_ids"] = meta.get("source_atom_ids", [])
+        a["provenance"] = await provenance(a["id"])
+        out.append(a)
+    return out
+
+
+async def provenance(atom_id: str) -> list[dict]:
+    """Resolve the source atoms a derived atom was inferred from. Missing/deleted
+    sources are simply omitted (deletability never breaks the derived atom)."""
+    atom = await get_atom(atom_id)
+    if not atom:
+        return []
+    meta = atom.get("meta") or {}
+    ids = meta.get("source_atom_ids") or []
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = await db.fetchall(
+        f"SELECT id, text, modality, confidence, created_at FROM memory_atom "
+        f"WHERE id IN ({placeholders})", tuple(ids),
+    )
+    by_id = {r["id"]: r for r in rows}
+    return [
+        {"id": i, "text": by_id[i]["text"], "modality": by_id[i].get("modality"),
+         "confidence": by_id[i].get("confidence"), "created_at": by_id[i].get("created_at")}
+        for i in ids if i in by_id
+    ]
+
+
+async def surface_contradiction(atom_ids: list[str], prompt_text: str) -> str | None:
+    """Surface a detected contradiction for reconciliation (do NOT auto-resolve).
+    Idempotent: if an open question already covers this atom set, returns None."""
+    atom_ids = sorted(set(atom_ids or []))
+    if len(atom_ids) < 2:
+        return None
+    key = json.dumps(atom_ids)
+    existing = await db.fetchone(
+        "SELECT id FROM memory_question WHERE kind='contradiction' "
+        "AND status='open' AND atom_ids=?", (key,),
+    )
+    if existing:
+        return None
+    qid = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO memory_question(id, kind, atom_ids, prompt_text, status, created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (qid, "contradiction", key, prompt_text, "open", db.now()),
+    )
+    return qid

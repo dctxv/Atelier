@@ -466,10 +466,13 @@ async def retrieve(
         }
 
     # Invariants G3f + G5f: suppression atoms and hypothesis atoms NEVER reach chat context.
+    # W2 Visibility Law: a proposed/rejected inference is never "believed" — it
+    # must not influence an answer until the user has confirmed it (status→active).
     mem_rows = {
         k: v for k, v in mem_rows.items()
         if v.get("predicate") != "suppressed"
         and v.get("modality") != "hypothesis"
+        and (v.get("status") in (None, "active"))
     }
 
     # W1: technical mode suppresses personal-flavoured atoms (opinions, desires,

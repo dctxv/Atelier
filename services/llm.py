@@ -41,6 +41,7 @@ _DEFAULT_TASK_TIERS: dict[str, str] = {
     "hypothesis_generation": "cheap",
     "hypothesis_nli":        "cheap",
     "weekly_diff_summary":   "cheap",
+    "memory_inference":      "cheap",   # W2 corpus inference pass
 }
 
 

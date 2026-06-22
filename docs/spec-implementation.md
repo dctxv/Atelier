@@ -124,6 +124,57 @@ personal opinion atom; `personal` injects broadly.
 - End-to-end latency including classification via `scripts/bench.py` (Stage-1 is
   regex/~0ms; Stage-2 stays off by default).
 
+### W2 — Inferential memory ✅ (backend; review UI is W3/W6)
+A corpus-level inference pass that reasons *across* the atom corpus — distinct
+from the single-message extraction (`workers/extraction.py`) and the
+future-prediction hypotheses (`workers/memory_prescient.py`).
+
+- **`workers/memory_inference.py`** — job `infer_memory` (background, never hot
+  path). Samples stated facts (excludes existing insights/hypotheses), asks the
+  cheap model for patterns / implied preferences / temporal evolution /
+  contradictions across the corpus, requires ≥ `min_evidence` distinct sources,
+  and mints derived atoms. Degrades silently with no model. Periodic schedule
+  registered in `app.py`. Config knobs (all `[VALIDATE]`): `inference_enabled`,
+  `inference_max_atoms`, `inference_min_evidence`, `inference_max_new`,
+  `inference_cadence_h`.
+- **`services/memory.py`** — the derived-atom lifecycle:
+  - `add_inference()` mints a *distinct class*: `modality='insight'`,
+    `type='inference'`, `status='proposed'`, lower base confidence
+    (`INFERENCE_BASE_CONFIDENCE`), provenance in `meta.source_atom_ids`.
+    Idempotent (dedups against existing insights by triple or vector similarity).
+  - `confirm_inference()` (proposed→active, stays an insight = "believed
+    inference"), `reject_inference()` (→rejected, conf 0, kept as signal),
+    `list_inferences()`, `provenance()`, `surface_contradiction()` (creates an
+    idempotent `memory_question`, never auto-resolves).
+- **`services/retrieval.py`** — **Visibility Law enforced structurally**: the
+  invariant filter now drops any atom whose `status` is not active/NULL, so a
+  proposed/rejected inference can never influence an answer. (Belt-and-braces;
+  the KNN cache + FTS already exclude non-active atoms.)
+- **`routers/memory.py`** — `/memory/inferred` now also returns
+  `proposed_inferences` (with provenance) and open `contradictions`; the existing
+  confirm/reject buttons are status-aware (proposed inferences route to the new
+  lifecycle); added `GET /memory/{id}/provenance` and `POST /memory/infer`
+  (manual trigger).
+
+**Tests** — `scripts/test_inference.py` (DB-backed, no model, green): distinctness,
+provenance + deletability (deleting an inference leaves source facts intact),
+**Visibility Law** (proposed invisible to retrieval; confirmed becomes
+retrievable), idempotency, reject-suppresses, and idempotent contradiction
+surfacing. 7/7.
+
+**Still owed for W2's full acceptance (need a model):** the inference-*quality*
+fixtures (does the cheap model produce the expected derived atoms and avoid
+hallucinated ones) — runs where a model endpoint exists.
+
+> **⚠ Flagged disagreement (per the spec's "flag, don't silently reconcile" rule).**
+> The pre-existing prescient layer mints `modality='insight'` atoms at
+> `status='active'` (in `_confirm_hypothesis` / `analyze_drift`) — i.e.
+> auto-believed *before* the user sees them, which conflicts with W2's Visibility
+> Law. W2 introduces the correct `proposed→active` lifecycle for the new corpus
+> pass and does **not** retrofit the prescient insights (they're gated behind the
+> `prescient` tier, off by default). Recommend a follow-up to route prescient
+> insights through the same proposed lifecycle. Not silently changed.
+
 ---
 
 ## 5. Open questions for Clay (gate later phases, not W1/W8)
