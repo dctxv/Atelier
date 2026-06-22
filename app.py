@@ -40,7 +40,6 @@ from routers import (
     sessions as sessions_router,
     skills,
     tasks,
-    voice as voice_router,
     web,
 )
 
@@ -120,7 +119,6 @@ for r in (
     research_router.router, sessions_router.router, skills.router, flashcards.router,
     cowriter_router.router, email_router.router, mcp_router.router, web.router,
     search_router.router, metrics_router.router, scratchpad_router.router,
-    voice_router.router,
 ):
     app.include_router(r)
 

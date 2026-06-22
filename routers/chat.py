@@ -31,7 +31,7 @@ from fastapi.responses import StreamingResponse
 from services import config, db, http_client, llm, retrieval, search, sessions, skills
 from services import math_eval, weather, stock, local_tools
 from services import projects as projects_svc
-from services.intent import classify, Intent, memory_relevance
+from services.intent import classify, Intent, retrieval_mode, classify_mode
 from workers import jobs
 
 router = APIRouter(prefix="/api")
@@ -49,6 +49,11 @@ _DEFAULTS = {
     "chat.memory_block_budget":     700,
     "chat.skills_block_budget":     400,
     "chat.card_bare_query_only":   True,
+    # W1: escalate the ambiguous "factual" mode to a cheap-model classify pass.
+    # OFF by default so the common path never pays a model round-trip on the hot
+    # path (cost → latency → intelligence). [VALIDATE] whether enabling it earns
+    # its latency on the labelled query set.
+    "chat.mode_llm_escalation":    False,
 }
 
 
@@ -348,6 +353,22 @@ async def chat_stream(request: Request):
     # [0] CLASSIFY
     intent = classify(user_text) if user_text else Intent()
 
+    # W1: cognitive-mode retrieval gate. Stage 1 is pure regex (~0ms); stage 2
+    # (cheap-model) only fires for the ambiguous "factual" residual and only when
+    # explicitly enabled. The mode decides which context serves this turn.
+    retr_policy: dict | None = None
+    retr_mode = "factual"
+    if user_text and not intent.is_chat_only:
+        if await _cfg("chat.mode_llm_escalation"):
+            retr_mode = await classify_mode(user_text, intent, escalate=llm.cheap)
+        else:
+            retr_mode = retrieval_mode(user_text, intent)
+        retr_policy = await retrieval.policy_for(retr_mode)
+        # Explicitly-scoped project context is never suppressed by the gate.
+        if project_id:
+            retr_policy = {**retr_policy, "inject_memory": True, "inject_docs": True,
+                           "suppress_personal": False}
+
     # ── Chat-only short-circuit ───────────────────────────────────────────────
     if intent.is_chat_only:
         persona = await config.get_setting("system_prompt") or DEFAULT_PERSONA
@@ -463,8 +484,10 @@ async def chat_stream(request: Request):
     results_per_query = _results_by_diff.get(intent.web_difficulty, web_results)
 
     gather_results = await asyncio.gather(
-        # Memory + docs (scoped to project when inside one)
-        retrieval.retrieve(user_text, budget_tokens=mem_budget, project_id=project_id)
+        # Memory + docs (scoped to project when inside one). The W1 policy gates
+        # which sources are queried and at what precision for this cognitive mode.
+        retrieval.retrieve(user_text, budget_tokens=mem_budget, project_id=project_id,
+                           policy=retr_policy)
             if user_text and not clock_data and not card_data else _noop(),
         # Web search
         _run_web_search(user_text, search_queries, results_per_query, max_searches) if do_search else _noop(),
@@ -642,13 +665,15 @@ async def chat_stream(request: Request):
                 ],
             }
 
-    # Memory gating: skip memory atoms for clearly impersonal queries (pinned always inject)
+    # W1 memory gating now happens inside retrieve() via the cognitive-mode
+    # policy: ambient memory is suppressed for tool/no_context modes and tuned for
+    # precision elsewhere, while pinned + project context are always kept. So the
+    # atoms returned here are already gated — no second pass (which could drop
+    # protected pinned/project atoms).
     mem_atoms_all = [a for a in atoms if a.get("source_type") != "document"]
     doc_atoms_all = [a for a in atoms if a.get("source_type") == "document"]
-    has_pinned = any(a.get("pinned") for a in mem_atoms_all)
-    mem_want = memory_relevance(user_text)
-    inject_memory = mem_want is not False or has_pinned
-    gated_atoms = (mem_atoms_all if inject_memory else []) + doc_atoms_all
+    inject_memory = bool(mem_atoms_all)
+    gated_atoms = atoms
 
     mem_block = retrieval.format_block(gated_atoms)
     doc_filenames = retrieval.doc_sources(gated_atoms)
@@ -715,6 +740,7 @@ async def chat_stream(request: Request):
         "memory": len(mem_atoms),
         "docs": doc_filenames,
         "sources": prov_sources[:6],
+        "mode": retr_mode,  # W1: surface the cognitive mode that gated retrieval
     }
 
     # Assemble with total budget
