@@ -282,19 +282,47 @@ function AtomRow({ atom: m }) {
   );
 }
 
-// ── Review tab ──────────────────────────────────────────────────────────────
-function ReviewTab({ questions, onResolve }) {
+// ── Review tab (W6: extraction visibility & steering) ─────────────────────────
+function ReviewTab({ questions, onResolve, onChange }) {
   const open = questions.open || [];
   const resolved = questions.resolved || [];
+  const [learned, setLearned] = useState([]);
+  const [proposed, setProposed] = useState([]);
 
-  if (open.length === 0) {
+  const load = useCallback(() => {
+    fetch('/api/memory/review').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { setLearned(d.learned || []); setProposed(d.proposed || []); }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  // Refresh the learned/proposed queue whenever the parent re-polls.
+  useEffect(() => { load(); }, [questions]);
+
+  async function act(id, action) {
+    await fetch(`/api/memory/review/${id}/${action}`, { method:'POST' });
+    load();
+    if (onChange) onChange();
+  }
+
+  async function saveEdit(id, text) {
+    await fetch(`/api/memory/${id}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ text }),
+    });
+    load();
+    if (onChange) onChange();
+  }
+
+  const nothing = open.length === 0 && learned.length === 0 && proposed.length === 0;
+  if (nothing) {
     return (
       <div style={{ padding:'56px', textAlign:'center' }}>
         <p style={{ fontFamily:'var(--font-b)', fontSize:15, color:'var(--text-2)', fontStyle:'italic' }}>
           Memory is coherent
         </p>
         <p style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)', marginTop:8 }}>
-          No conflicts or gaps detected.
+          Nothing to review — no new learnings, inferences, or conflicts.
         </p>
         {resolved.length > 0 && (
           <p style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)', marginTop:16 }}>
@@ -308,12 +336,140 @@ function ReviewTab({ questions, onResolve }) {
   return (
     <div className="scroll" style={{ flex:1, background:'var(--thread-bg)' }}>
       <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 40px' }}>
-        <SectionLabel right={`${open.length} open`} style={{ marginBottom:20 }}>Review</SectionLabel>
-        {open.map(q => (
-          <QuestionCard key={q.id} q={q} onResolve={onResolve}/>
-        ))}
+
+        {/* Recently learned — stated facts extraction produced */}
+        {learned.length > 0 && (
+          <section style={{ marginBottom:36 }}>
+            <SectionLabel right={`${learned.length}`} style={{ marginBottom:6 }}>
+              Recently learned
+            </SectionLabel>
+            <p style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)',
+              marginBottom:16, fontStyle:'italic' }}>
+              What I picked up from our conversations. Keep, edit, or reject —
+              rejecting tells me not to learn it again.
+            </p>
+            {learned.map(m => (
+              <LearnedCard key={m.id} m={m}
+                onAccept={() => act(m.id, 'accept')}
+                onReject={() => act(m.id, 'reject')}
+                onSave={txt => saveEdit(m.id, txt)}/>
+            ))}
+          </section>
+        )}
+
+        {/* Proposed inferences — shown before believed (Visibility Law) */}
+        {proposed.length > 0 && (
+          <section style={{ marginBottom:36 }}>
+            <SectionLabel right={`${proposed.length}`} style={{ marginBottom:6 }}>
+              Proposed inferences
+            </SectionLabel>
+            <p style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)',
+              marginBottom:16, fontStyle:'italic' }}>
+              Things I've inferred but not yet acted on. They won't shape my
+              answers until you confirm them.
+            </p>
+            {proposed.map(p => (
+              <ProposedCard key={p.id} p={p}
+                onConfirm={() => act(p.id, 'accept')}
+                onReject={() => act(p.id, 'reject')}/>
+            ))}
+          </section>
+        )}
+
+        {/* To reconcile — conflicts / tensions / gaps */}
+        {open.length > 0 && (
+          <section>
+            <SectionLabel right={`${open.length} open`} style={{ marginBottom:20 }}>
+              To reconcile
+            </SectionLabel>
+            {open.map(q => (
+              <QuestionCard key={q.id} q={q} onResolve={onResolve}/>
+            ))}
+          </section>
+        )}
       </div>
     </div>
+  );
+}
+
+function LearnedCard({ m, onAccept, onReject, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.text);
+  const color = MODALITY_COLORS[m.modality] || 'var(--text-3)';
+  return (
+    <Card style={{ marginBottom:12 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+        {monoLabel(m.modality || 'fact', color)}
+        {m.confidence != null && monoLabel(`${Math.round(m.confidence*100)}%`)}
+        {monoLabel(relTime(m.timestamp), undefined, { marginLeft:'auto' })}
+      </div>
+      {editing ? (
+        <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={2}
+          style={{ width:'100%', fontFamily:'var(--font-b)', fontSize:13.5, color:'var(--text)',
+            lineHeight:1.6, background:'var(--thread-bg)', border:'1px solid var(--border-2)',
+            borderRadius:6, padding:'8px 10px', marginBottom:12, resize:'vertical' }}/>
+      ) : (
+        <p style={{ fontFamily:'var(--font-b)', fontSize:13.5, color:'var(--text)',
+          lineHeight:1.65, marginBottom:12 }}>{m.text}</p>
+      )}
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        {editing ? (
+          <>
+            <GhostBtn onClick={() => { if (draft.trim()) { onSave(draft.trim()); setEditing(false); } }}
+              style={{ color:'var(--accent)', borderColor:'var(--accent-bd)' }}>Save</GhostBtn>
+            <GhostBtn onClick={() => { setDraft(m.text); setEditing(false); }}>Cancel</GhostBtn>
+          </>
+        ) : (
+          <>
+            <GhostBtn onClick={onAccept}>Keep</GhostBtn>
+            <GhostBtn onClick={() => setEditing(true)}>Edit</GhostBtn>
+            <GhostBtn onClick={onReject}
+              style={{ color:'oklch(52% .15 25)', borderColor:'oklch(70% .10 25)' }}>Reject</GhostBtn>
+          </>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function ProposedCard({ p, onConfirm, onReject }) {
+  const [showProv, setShowProv] = useState(false);
+  const prov = p.provenance || [];
+  return (
+    <Card style={{ marginBottom:12 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+        {monoLabel(p.inference_kind || 'inferred', MODALITY_COLORS.insight)}
+        {p.confidence != null && monoLabel(`${Math.round(p.confidence*100)}%`)}
+        {monoLabel('inferred', undefined, { marginLeft:'auto' })}
+      </div>
+      <p style={{ fontFamily:'var(--font-b)', fontSize:13.5, color:'var(--text)',
+        lineHeight:1.65, marginBottom:12 }}>{p.text}</p>
+      {prov.length > 0 && (
+        <div style={{ marginBottom:12 }}>
+          <button onClick={() => setShowProv(v => !v)} style={{ cursor:'pointer' }}>
+            {monoLabel(`${showProv ? 'hide' : 'show'} evidence (${prov.length})`,
+              'var(--accent-tx)')}
+          </button>
+          {showProv && (
+            <div style={{ marginTop:8 }}>
+              {prov.map(s => (
+                <div key={s.id} style={{ padding:'6px 10px', marginBottom:5,
+                  background:'var(--thread-bg)', borderRadius:6,
+                  fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-2)' }}>
+                  {s.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        <GhostBtn onClick={onConfirm}
+          style={{ color:'var(--accent)', borderColor:'var(--accent-bd)' }}>Confirm</GhostBtn>
+        <GhostBtn onClick={onReject}
+          style={{ color:'oklch(52% .15 25)', borderColor:'oklch(70% .10 25)' }}>Reject</GhostBtn>
+      </div>
+    </Card>
   );
 }
 
@@ -932,6 +1088,63 @@ function ScoreboardTable({ scoreboard }) {
   );
 }
 
+// ── Active memory panel (W3: quiet proactive surfacing) ───────────────────────
+function ActiveMemoryPanel({ onTabSwitch }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+
+  const load = useCallback(() => {
+    fetch('/api/memory/surfacing').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) { setItems(d.items || []); setTotal(d.total || 0); }
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function actInference(id, action) {
+    await fetch(`/api/memory/review/${id}/${action}`, { method:'POST' });
+    load();
+  }
+
+  if (!items.length) return null;  // quiet by default — nothing to say, say nothing
+
+  const kindLabel = { contradiction:'Conflict', tension:'Tension' };
+
+  return (
+    <div style={{ marginBottom:24, padding:'16px 20px', background:'var(--accent-bg)',
+      border:'1px solid var(--accent-bd)', borderRadius:10 }}>
+      <div style={{ display:'flex', alignItems:'center', marginBottom:12 }}>
+        <SectionLabel>Active memory</SectionLabel>
+        {total > items.length && (
+          <button onClick={() => onTabSwitch('review')} style={{ marginLeft:'auto', cursor:'pointer' }}>
+            {monoLabel(`+${total - items.length} more in Review`, 'var(--accent-tx)')}
+          </button>
+        )}
+      </div>
+      {items.map(it => (
+        <div key={it.id} style={{ padding:'10px 0', borderBottom:'1px solid var(--rule)' }}>
+          <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:6 }}>
+            {monoLabel(it.type === 'inference' ? (it.kind || 'inferred') : (kindLabel[it.type] || it.type),
+              it.type === 'inference' ? MODALITY_COLORS.insight : 'oklch(52% .15 25)')}
+            {it.confidence != null && monoLabel(`${Math.round(it.confidence*100)}%`)}
+          </div>
+          <p style={{ fontFamily:'var(--font-b)', fontSize:13, color:'var(--text)',
+            lineHeight:1.55, marginBottom:8 }}>{it.text}</p>
+          {it.type === 'inference' ? (
+            <div style={{ display:'flex', gap:8 }}>
+              <GhostBtn onClick={() => actInference(it.id, 'accept')}
+                style={{ color:'var(--accent)', borderColor:'var(--accent-bd)' }}>Confirm</GhostBtn>
+              <GhostBtn onClick={() => actInference(it.id, 'reject')}
+                style={{ color:'oklch(52% .15 25)', borderColor:'oklch(70% .10 25)' }}>Reject</GhostBtn>
+            </div>
+          ) : (
+            <GhostBtn onClick={() => onTabSwitch('review')}>Reconcile in Review</GhostBtn>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Overview tab ─────────────────────────────────────────────────────────────
 function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
   const openQCount = (questions.open || []).length;
@@ -975,6 +1188,9 @@ function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
             </>
           )}
         </div>
+
+        {/* Active memory — quiet proactive surfacing (W3) */}
+        <ActiveMemoryPanel onTabSwitch={onTabSwitch}/>
 
         {/* Card grid */}
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',
@@ -1528,11 +1744,12 @@ function MemorySurface() {
       fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
       fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
       fetch('/api/config').then(r=>r.ok?r.json():null).catch(()=>null),
-    ]).then(([memData, skillData, qData, goalData, cfgData]) => {
+      fetch('/api/memory/review').then(r=>r.ok?r.json():{counts:{}}).catch(()=>({counts:{}})),
+    ]).then(([memData, skillData, qData, goalData, cfgData, revData]) => {
       setMemories(memData.memories || memData.memory || []);
       setSkills(skillData.skills || []);
       setQuestions(qData);
-      setReviewBadge((qData.open||[]).length);
+      setReviewBadge((qData.open||[]).length + ((revData.counts||{}).total||0));
       setGoals(goalData.goals || []);
       // Tier comes from app_config; the /config endpoint doesn't include it, so
       // try the dedicated settings route if available
@@ -1551,10 +1768,11 @@ function MemorySurface() {
       fetch('/api/memory').then(r=>r.ok?r.json():{memories:[]}).catch(()=>({memories:[]})),
       fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
       fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
-    ]).then(([memData, qData, goalData]) => {
+      fetch('/api/memory/review').then(r=>r.ok?r.json():{counts:{}}).catch(()=>({counts:{}})),
+    ]).then(([memData, qData, goalData, revData]) => {
       setMemories(memData.memories || memData.memory || []);
       setQuestions(qData);
-      setReviewBadge((qData.open||[]).length);
+      setReviewBadge((qData.open||[]).length + ((revData.counts||{}).total||0));
       setGoals(goalData.goals || []);
     }).catch(() => {});
   }, []);
@@ -1655,7 +1873,7 @@ function MemorySurface() {
         {tab==='fragments' && <FragmentsTab memories={memories}/>}
         {tab==='graph' && <GraphTab/>}
         {tab==='review' && (
-          <ReviewTab questions={questions} onResolve={handleResolve}/>
+          <ReviewTab questions={questions} onResolve={handleResolve} onChange={loadData}/>
         )}
         {tab==='goals' && <GoalsTab goals={goals}/>}
         {tab==='timelines' && <TimelinesTab tier={tier}/>}

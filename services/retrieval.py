@@ -38,6 +38,7 @@ import re
 import numpy as np
 
 from . import db, embeddings
+from .intent import MODE_POLICIES
 
 RRF_K = 60
 RECENCY_HALF_LIFE = 30 * 86400
@@ -46,6 +47,30 @@ DOC_MAX_CHUNKS = 6
 DIM = db.EMBED_DIM  # 256
 PROJECT_OVERFETCH = 6  # over-fetch factor before project filter [VALIDATE]
 KNN_MIN_COS = 0.25     # min cosine for a memory atom to count as relevant [VALIDATE]
+
+# ── W1: cognitive-mode retrieval policies ─────────────────────────────────────
+# The per-mode policy table (MODE_POLICIES) lives in services.intent so it stays
+# importable without numpy and the suppression invariants stay unit-testable.
+# Personal-flavoured atom signals used by suppress_personal (technical mode).
+_PERSONAL_MODALITIES = {"opinion", "desire", "self_perception"}
+_PERSONAL_CATEGORIES = {"attribute"}
+
+
+async def policy_for(mode: str) -> dict:
+    """Return the retrieval policy for a cognitive mode, merged with any runtime
+    overrides stored in app_config under "retrieval.mode_policies" (JSON)."""
+    base = dict(MODE_POLICIES.get(mode, MODE_POLICIES["factual"]))
+    try:
+        row = await db.fetchone(
+            "SELECT value FROM app_config WHERE key='retrieval.mode_policies'"
+        )
+        if row and row.get("value"):
+            overrides = json.loads(row["value"]) or {}
+            if isinstance(overrides.get(mode), dict):
+                base.update(overrides[mode])
+    except Exception:
+        pass
+    return base
 
 # ── Read-time confidence decay (Living Memory v2) ─────────────────────────────
 # Grace period and half-life per predicate_category.  All [VALIDATE] against
@@ -150,13 +175,20 @@ async def _ensure_knn_cache() -> None:
 
 
 async def _numpy_knn(serialized_vec: bytes, k: int,
-                     project_id: str | None = None) -> list[str]:
+                     project_id: str | None = None,
+                     min_cos: float | None = None) -> list[str]:
     """Top-k atom IDs by cosine similarity.
+
+    min_cos overrides the module relevance floor (KNN_MIN_COS) — the cognitive
+    mode (W1) raises it for high-precision modes so over-fetching is suppressed.
 
     When project_id is given: over-fetch by PROJECT_OVERFETCH, then filter to
     atoms in this project OR globally-pinned. This avoids under-return when the
     global top-k are all from other projects.
     """
+    floor = KNN_MIN_COS if min_cos is None else min_cos
+    if k <= 0:
+        return []
     await _ensure_knn_cache()
     if _knn_mat is None or _knn_mat.shape[0] == 0:
         return []
@@ -175,13 +207,13 @@ async def _numpy_knn(serialized_vec: bytes, k: int,
             top = top[np.argsort(scores[top])[::-1]]
         # Relevance floor: don't return atoms that are merely "nearest" when none
         # are actually similar (otherwise every query injects irrelevant memory).
-        return [_knn_ids[i] for i in top if scores[i] >= KNN_MIN_COS]
+        return [_knn_ids[i] for i in top if scores[i] >= floor]
 
     # Project-scoped: over-fetch then filter
     raw_k = min(k * PROJECT_OVERFETCH, _knn_mat.shape[0])
     top = np.argpartition(scores, -raw_k)[-raw_k:]
     top = top[np.argsort(scores[top])[::-1]]
-    return [_knn_ids[i] for i in top if scores[i] >= KNN_MIN_COS]  # caller filters to project
+    return [_knn_ids[i] for i in top if scores[i] >= floor]  # caller filters to project
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -307,6 +339,10 @@ def _recency_boost(created_at: int | None) -> float:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
+async def _empty() -> list:
+    return []
+
+
 async def retrieve(
     query: str,
     k: int = 12,
@@ -314,6 +350,7 @@ async def retrieve(
     project_id: str | None = None,
     include_faded: bool = False,
     as_of: int | None = None,
+    policy: dict | None = None,
 ) -> list[dict]:
     """Hybrid retrieval with Living Memory v2 decay and temporal filtering.
 
@@ -321,10 +358,24 @@ async def retrieve(
                    FADING_THRESHOLD (normally excluded from retrieval).
     as_of:         epoch-seconds timestamp; when given, only return atoms whose
                    validity range contained that point in time (time-travel).
+    policy:        W1 cognitive-mode policy (see MODE_POLICIES). When given it
+                   gates AMBIENT memory/doc recall and tunes k/min_cos/budget.
+                   Pinned atoms are ALWAYS included regardless of policy, so the
+                   gate can suppress noise without ever dropping protected
+                   context. When None, behaviour is unchanged (back-compat).
     """
     query = (query or "").strip()
     if not query:
         return []
+
+    pol = policy or {}
+    inject_memory     = pol.get("inject_memory", True)
+    inject_docs       = pol.get("inject_docs", True)
+    k_mem             = pol.get("k", k) if inject_memory else 0
+    min_cos           = pol.get("min_cos")          # None → module default floor
+    suppress_personal = pol.get("suppress_personal", False)
+    if policy is not None and pol.get("budget_tokens") is not None:
+        budget_tokens = pol["budget_tokens"]
 
     # Single embed call — pre-serialized bytes shared by all vector functions.
     vec = await embeddings.embed(query)
@@ -334,10 +385,10 @@ async def retrieve(
     (
         numpy_ids_raw, fts_ids, doc_vec_ids, doc_fts_ids, pinned, ready_rows
     ) = await asyncio.gather(
-        _numpy_knn(sv, k, project_id=project_id),
-        _fts_hits(query, k),
-        _doc_vector_hits(sv, doc_k, project_id=project_id),
-        _doc_fts_hits(query, doc_k, project_id=project_id),
+        _numpy_knn(sv, k_mem, project_id=project_id, min_cos=min_cos) if inject_memory else _empty(),
+        _fts_hits(query, k_mem) if inject_memory else _empty(),
+        _doc_vector_hits(sv, doc_k, project_id=project_id) if inject_docs else _empty(),
+        _doc_fts_hits(query, doc_k, project_id=project_id) if inject_docs else _empty(),
         db.fetchall("SELECT * FROM memory_atom WHERE pinned=1 ORDER BY created_at DESC"),
         db.fetchall("SELECT id FROM document WHERE status='ready'"),
     )
@@ -351,7 +402,7 @@ async def retrieve(
         )
         project_atom_ids = {r["id"] for r in project_atom_rows}
         allowed_ids = project_atom_ids | pinned_ids
-        numpy_ids = [aid for aid in numpy_ids_raw if aid in allowed_ids][:k]
+        numpy_ids = [aid for aid in numpy_ids_raw if aid in allowed_ids][:k_mem]
         # Also scope FTS hits
         fts_ids = [fid for fid in fts_ids if fid in allowed_ids]
     else:
@@ -360,7 +411,7 @@ async def retrieve(
             "SELECT id FROM memory_atom WHERE project_id IS NOT NULL AND project_id != ''"
         )
         project_only_ids = {r["id"] for r in project_only_rows}
-        numpy_ids = [aid for aid in numpy_ids_raw if aid not in project_only_ids][:k]
+        numpy_ids = [aid for aid in numpy_ids_raw if aid not in project_only_ids][:k_mem]
         fts_ids   = [fid for fid in fts_ids if fid not in project_only_ids]
 
     ready_doc_ids = {r["id"] for r in ready_rows}
@@ -415,11 +466,25 @@ async def retrieve(
         }
 
     # Invariants G3f + G5f: suppression atoms and hypothesis atoms NEVER reach chat context.
+    # W2 Visibility Law: a proposed/rejected inference is never "believed" — it
+    # must not influence an answer until the user has confirmed it (status→active).
     mem_rows = {
         k: v for k, v in mem_rows.items()
         if v.get("predicate") != "suppressed"
         and v.get("modality") != "hypothesis"
+        and (v.get("status") in (None, "active"))
     }
+
+    # W1: technical mode suppresses personal-flavoured atoms (opinions, desires,
+    # traits, self-perception) so a debugging turn doesn't pull in life facts.
+    # Pinned atoms are never dropped.
+    if suppress_personal:
+        mem_rows = {
+            k: v for k, v in mem_rows.items()
+            if v.get("pinned")
+            or (v.get("modality") not in _PERSONAL_MODALITIES
+                and v.get("predicate_category") not in _PERSONAL_CATEGORIES)
+        }
 
     # Prescient-only stale-self-image guard (P1.2): annotate superseded atoms.
     tier_row = await db.fetchone("SELECT value FROM app_config WHERE key='memory.tier'")

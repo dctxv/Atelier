@@ -523,22 +523,16 @@ Insight atoms appear in chat context labeled as inferred. The model knows that `
 
 Not all queries should trigger a memory lookup. "What is the capital of France?" does not need my memory. "What's my name?" does.
 
-`memory_relevance(text)` in `services/intent.py` classifies queries:
+**As of W1 (see `docs/spec-implementation.md`)** this is handled by the cognitive-mode gate, not the older boolean `memory_relevance()`. Before `retrieve()` fires, `retrieval_mode(text)` in `services/intent.py` classifies the turn into one of six modes — `tool`, `no_context`, `factual`, `technical`, `exploratory`, `personal` — and each maps to a retrieval policy in `intent.MODE_POLICIES` (consumed via `retrieval.policy_for`). The policy decides which sources are queried, the candidate count `k`, the cosine floor `min_cos`, the token budget, and whether personal-flavoured atoms are suppressed.
 
-- Returns `True` if the text matches `_MEM_WANT` patterns: explicit recall requests (`remember`, `recall`, `you know`), personal possessives (`my name`, `my project`), second-person references (`you said`, `told you`)
-- Returns `False` if the text matches `_MEM_SKIP` patterns (factual lookups: `what is`, `who is`, `define`, `explain`, `how do`) AND has no personal pronouns (`I`, `my`, `me`, `we`, `our`)
-- Returns `None` (ambiguous) otherwise
+- `tool` / `no_context` → `inject_memory: False` (ambient memory suppressed entirely).
+- `factual` → tight, high-precision (small `k`, high `min_cos`).
+- `technical` → docs + technical atoms, `suppress_personal: True` (drops opinion/desire/trait/self-perception atoms).
+- `exploratory` / `personal` → wider, more associative recall.
 
-In `routers/chat.py`:
+Gating now happens **inside** `retrieve(policy=…)`, so the chat layer no longer re-gates. **Pinned atoms are always injected regardless of mode**, and inside a project the gate is forced open (`inject_memory/inject_docs: True`, `suppress_personal: False`) because project context is explicitly scoped. The legacy `memory_relevance()` is retained for back-compat and non-chat callers.
 
-```python
-mem_want = memory_relevance(user_text)
-inject_memory = mem_want is not False or has_pinned
-```
-
-`False` skips memory injection entirely. `True` or `None` injects normally. Pinned atoms always inject regardless — they're things the user has explicitly flagged as always-relevant context.
-
-The ambiguous `None` case injects. The asymmetry is intentional: it's better to occasionally inject memory on an irrelevant query than to miss a query where memory was genuinely needed. The false positive cost (a few extra context tokens) is lower than the false negative cost (an answer that ignores relevant personal context).
+The default lean is toward **precision** (suppression) because the observed problem was over-fetching irrelevant context. An optional cheap-model escalation (`chat.mode_llm_escalation`, OFF by default) can refine the ambiguous `factual` residual without paying a model round-trip on the common path. All thresholds are `[VALIDATE]` config knobs (`retrieval.mode_policies` JSON override).
 
 ---
 

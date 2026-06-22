@@ -10,6 +10,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 
 from services import config, db, memory, questions, retrieval, strands
+from workers import jobs
 
 router = APIRouter(prefix="/api")
 
@@ -537,19 +538,62 @@ async def get_inferred():
         except Exception:
             pass
 
+    # W2: proposed corpus inferences awaiting review (Visibility Law — these are
+    # NOT yet influencing answers; they appear here so the user can confirm/reject).
+    proposed = await memory.list_inferences(status="proposed", limit=50)
+    proposed_inferences = [
+        {
+            **_legacy(a),
+            "inference_kind": a.get("inference_kind", "inferred"),
+            "provenance": a.get("provenance", []),
+            "status": "proposed",
+        }
+        for a in proposed
+    ]
+
+    # Open contradictions detected by the corpus pass, awaiting reconciliation.
+    contra_rows = await db.fetchall(
+        "SELECT * FROM memory_question WHERE kind='contradiction' AND status='open' "
+        "ORDER BY created_at DESC LIMIT 50"
+    )
+    contradictions = []
+    for q in contra_rows:
+        try:
+            ids = json.loads(q["atom_ids"])
+        except Exception:
+            ids = []
+        prov = []
+        if ids:
+            ph = ",".join("?" * len(ids))
+            arows = await db.fetchall(
+                f"SELECT id, text FROM memory_atom WHERE id IN ({ph})", tuple(ids)
+            )
+            prov = [{"id": r["id"], "text": r["text"]} for r in arows]
+        contradictions.append({
+            "id": q["id"], "prompt_text": q["prompt_text"],
+            "atom_ids": ids, "atoms": prov, "created_at": q["created_at"],
+        })
+
     return {
         "hypotheses": hypotheses,
         "inferred_facts": inferred_facts,
+        "proposed_inferences": proposed_inferences,
+        "contradictions": contradictions,
         "scoreboard": scoreboard,
     }
 
 
 @router.post("/memory/inferred/{atom_id}/confirm")
 async def confirm_inferred(atom_id: str):
-    """Confirm a hypothesis or inferred atom → promote to ordinary 0.98 fact."""
+    """Confirm an inference or hypothesis. A *proposed* corpus inference (W2) is
+    promoted to believed (status='active') while staying an inference; a
+    prescient hypothesis/insight is promoted to an ordinary 0.98 fact."""
     atom = await memory.get_atom(atom_id)
     if not atom:
         raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.confirm_inference(atom_id)
+        return {"ok": True, "promoted": "believed_inference"}
     await memory.update_atom(atom_id, confidence=0.98)
     # Flip modality to factual so the (inferred) tag is removed
     await db.execute(
@@ -562,10 +606,13 @@ async def confirm_inferred(atom_id: str):
 
 @router.post("/memory/inferred/{atom_id}/reject")
 async def reject_inferred(atom_id: str):
-    """Reject a hypothesis or inferred atom → retract + update ledger."""
+    """Reject an inference/hypothesis → suppress + (for hypotheses) update ledger."""
     atom = await memory.get_atom(atom_id)
     if not atom:
         raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.reject_inference(atom_id)
+        return {"ok": True}
     meta = atom.get("meta") or {}
     pattern = meta.get("generation_pattern", "extrapolation")
     if atom.get("modality") == "hypothesis":
@@ -574,6 +621,109 @@ async def reject_inferred(atom_id: str):
         await _update_flaw_ledger(pattern, "r")
     await memory.retract_atom(atom_id, "user_rejected")
     return {"ok": True}
+
+
+# ── W3: active / reflexive surfacing ──────────────────────────────────────────
+
+@router.get("/memory/surfacing")
+async def get_surfacing(limit: int = 4):
+    """A QUIET, ranked digest of what memory wants to show the user proactively:
+    newly-formed inferences (incl. connections) + open contradictions/tensions.
+    Drives the subtle nav signal and the Overview 'Active memory' panel — it
+    informs, it does not nag (capped, highest-signal first)."""
+    proposed = await memory.list_inferences(status="proposed", limit=50)
+    proposed.sort(key=lambda a: ((a.get("confidence") or 0), a.get("created_at") or 0),
+                  reverse=True)
+
+    contra_rows = await db.fetchall(
+        "SELECT id, kind, atom_ids, prompt_text, created_at FROM memory_question "
+        "WHERE kind IN ('contradiction','tension') AND status='open' "
+        "ORDER BY created_at DESC LIMIT 50"
+    )
+
+    items: list[dict] = []
+    for a in proposed:
+        items.append({
+            "id": a["id"], "type": "inference",
+            "kind": a.get("inference_kind", "inferred"),
+            "text": a["text"], "confidence": a.get("confidence"),
+            "provenance": a.get("provenance", []),
+        })
+    for q in contra_rows:
+        items.append({
+            "id": q["id"], "type": q["kind"], "kind": q["kind"],
+            "text": q["prompt_text"], "created_at": q["created_at"],
+        })
+
+    total = len(proposed) + len(contra_rows)
+    return {"items": items[:limit], "total": total,
+            "counts": {"inferences": len(proposed), "conflicts": len(contra_rows)}}
+
+
+# ── W6: extraction visibility & steering ──────────────────────────────────────
+
+@router.get("/memory/review")
+async def get_review_queue():
+    """What the system recently learned, awaiting the user's accept/reject/edit:
+    extracted facts + proposed inferences (with provenance)."""
+    learned = [_legacy(a) for a in await memory.list_unreviewed_facts(limit=50)]
+    proposed_raw = await memory.list_inferences(status="proposed", limit=50)
+    proposed = [
+        {**_legacy(a), "inference_kind": a.get("inference_kind", "inferred"),
+         "provenance": a.get("provenance", [])}
+        for a in proposed_raw
+    ]
+    return {
+        "learned": learned,
+        "proposed": proposed,
+        "counts": {"learned": len(learned), "proposed": len(proposed),
+                   "total": len(learned) + len(proposed)},
+    }
+
+
+@router.post("/memory/review/{atom_id}/accept")
+async def accept_review(atom_id: str):
+    """Accept what was learned. A proposed inference is promoted to believed; a
+    stated fact is simply dismissed from the queue (it was already believed)."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.confirm_inference(atom_id)
+    else:
+        await memory.mark_reviewed(atom_id)
+    return {"ok": True}
+
+
+@router.post("/memory/review/{atom_id}/reject")
+async def reject_review(atom_id: str):
+    """Reject what was learned. A proposed inference is suppressed; a stated fact
+    is retracted and its triple remembered so it isn't silently re-learned."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.reject_inference(atom_id)
+    else:
+        await memory.add_rejection_signal(atom)
+        await memory.retract_atom(atom_id, "user_rejected_extraction")
+    return {"ok": True}
+
+
+@router.get("/memory/{atom_id}/provenance")
+async def get_provenance(atom_id: str):
+    """The source atoms a derived (inferred) atom was inferred from."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    return {"atom_id": atom_id, "sources": await memory.provenance(atom_id)}
+
+
+@router.post("/memory/infer")
+async def trigger_inference():
+    """Manually trigger the W2 corpus inference pass (background job)."""
+    job_id = await jobs.enqueue("infer_memory")
+    return {"ok": True, "job_id": job_id}
 
 
 @router.post("/memory/inferred/{atom_id}/watch")

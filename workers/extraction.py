@@ -175,6 +175,11 @@ async def _reconcile_before_insert(item: dict, project_id: str | None) -> str:
     if not subject or not predicate or non_literal:
         return "insert"
 
+    # W6 steering: if the user previously rejected this exact triple, don't
+    # silently re-learn it (a rejection measurably influences future extraction).
+    if await memory.is_extraction_suppressed(subject, predicate, obj):
+        return "skip"
+
     # Find existing active atoms with same (subject, predicate)
     existing_rows = await db.fetchall(
         "SELECT * FROM memory_atom "
@@ -279,6 +284,7 @@ async def extract_memory(payload: dict):
 
     items = _parse_json_array(raw)
 
+    created_atom_ids: list[str] = []
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -373,6 +379,9 @@ async def extract_memory(payload: dict):
             meta=meta if meta else None,
         )
 
+        if atom:
+            created_atom_ids.append(atom["id"])
+
         # Supersede old atoms for functional/comparative predicates
         for old_id in item.get("_supersede_ids", []):
             if atom and atom["id"] != old_id:
@@ -389,6 +398,20 @@ async def extract_memory(payload: dict):
                 from workers.memory_prescient import test_hypotheses_against_atom
                 import asyncio
                 asyncio.create_task(test_hypotheses_against_atom(atom))
+
+    # W2 Ex2: read what was implied-but-not-said in this turn. Background job
+    # (own cheap-model call), gated to meaningful chat turns that produced atoms
+    # so cost stays bounded (cost ceiling first).
+    if created_atom_ids and source_kind == "chat":
+        turn_min = await _get_config("memory.turn_inference_min_signif", 0.5)
+        if score >= turn_min:
+            await jobs.enqueue("infer_turn", {
+                "user_text": user_text,
+                "assistant_text": assistant_text,
+                "atom_ids": created_atom_ids,
+                "source_id": source_id,
+                "project_id": project_id,
+            })
 
 
 async def _route_commitment(atom: dict, session_id: str | None) -> None:

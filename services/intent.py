@@ -280,6 +280,9 @@ def memory_relevance(text: str):
     False is returned only when the message is clearly impersonal: a definition,
     code-generation, or technical explanation request with no first-person signal.
     None and True both result in memory injection; False skips it (except pinned atoms).
+
+    Retained for backward-compat (other callers + tests). The chat hot-path now
+    uses the richer cognitive-mode gate below (retrieval_mode / classify_mode).
     """
     t = (text or "").strip()
     if not t:
@@ -289,3 +292,178 @@ def memory_relevance(text: str):
     if _MEM_SKIP.match(t) and not _PERSONAL.search(t):
         return False
     return None
+
+
+# ── W1: cognitive-mode retrieval gate ─────────────────────────────────────────
+# The headline fix. Before retrieve() fires, classify what the user is actually
+# *doing*, then retrieve only what serves that cognitive mode. Stage 1 is pure
+# regex/heuristic (~0ms, hot-path safe). Stage 2 is an optional cheap-model
+# escalation for the ambiguous residual ("factual"), wired in chat.py but OFF by
+# default so the common path never pays a model round-trip (cost→latency→intel).
+#
+# Modes (see spec W1 §4):
+#   tool        — deterministic local answer; retrieve nothing.
+#   no_context  — generic world-knowledge / generation, no personal signal;
+#                 suppress ambient memory, keep document RAG.
+#   factual     — specific (possibly personal) fact lookup; tight, high-precision.
+#   technical   — code / debugging; docs + technical atoms, suppress personal.
+#   exploratory — brainstorming; wider, more associative retrieval.
+#   personal    — reflection or explicit memory request; full memory injection.
+#
+# Pinned atoms and explicitly-scoped project/document context are NEVER suppressed
+# by this gate — that protection lives in retrieval.retrieve() and chat.py, not
+# here. This function only chooses a mode.
+RETRIEVAL_MODES = ("tool", "no_context", "factual", "technical", "exploratory", "personal")
+
+# Per-mode retrieval policy (consumed by retrieval.retrieve via retrieval.policy_for).
+# Lives here so it stays importable without the heavy retrieval deps (numpy etc.),
+# which keeps the W1 suppression invariants unit-testable. Defaults lean toward
+# PRECISION — the observed problem is over-fetching. Every value is [VALIDATE]
+# against scripts/bench.py + the labelled query set and is overridable at runtime
+# via the app_config JSON key "retrieval.mode_policies".
+#
+#   inject_memory     — run the ambient memory KNN/FTS at all (pinned atoms are
+#                       ALWAYS included regardless; this only gates AMBIENT recall).
+#   inject_docs       — run document RAG.
+#   k                 — memory candidate count.
+#   min_cos           — cosine floor for an ambient memory atom to count.
+#   budget_tokens     — memory+doc block token budget for this mode.
+#   suppress_personal — drop personal-flavoured atoms (opinion/desire/trait/
+#                       self_perception) so technical queries don't pull life facts.
+MODE_POLICIES: dict[str, dict] = {
+    "tool": {
+        "inject_memory": False, "inject_docs": False, "k": 0,
+        "min_cos": 0.99, "budget_tokens": 0, "suppress_personal": False,
+    },
+    "no_context": {
+        "inject_memory": False, "inject_docs": True, "k": 0,
+        "min_cos": 0.99, "budget_tokens": 350, "suppress_personal": False,
+    },
+    "factual": {
+        "inject_memory": True, "inject_docs": True, "k": 6,
+        "min_cos": 0.42, "budget_tokens": 350, "suppress_personal": False,
+    },
+    "technical": {
+        "inject_memory": True, "inject_docs": True, "k": 8,
+        "min_cos": 0.38, "budget_tokens": 500, "suppress_personal": True,
+    },
+    "exploratory": {
+        "inject_memory": True, "inject_docs": True, "k": 14,
+        "min_cos": 0.28, "budget_tokens": 700, "suppress_personal": False,
+    },
+    "personal": {
+        "inject_memory": True, "inject_docs": True, "k": 14,
+        "min_cos": 0.25, "budget_tokens": 700, "suppress_personal": False,
+    },
+}
+
+# Technical / debugging signals (code, errors, tooling). [VALIDATE]
+_TECH_SIGNALS = re.compile(
+    r"```|\b(def |class |import |func |const |let |var |return |async |await |"
+    r"stack\s*trace|traceback|exception|stacktrace|null\s*pointer|segfault|"
+    r"compile[rd]?|runtime\s+error|type\s*error|syntax\s*error|undefined|"
+    r"regex|regexp|sql\b|query|schema|endpoint|api\b|payload|"
+    r"npm|pip|pytest|docker|kubernetes|kubectl|git\b|webpack|"
+    r"bug|debug|refactor|stack\s+overflow|deadlock|race\s+condition|"
+    r"python|javascript|typescript|rust|golang|c\+\+|java\b|sqlite|postgres|redis)\b",
+    re.I,
+)
+_TECH_ERROR = re.compile(r"\b(error|exception|fail(?:ing|ed|s)?|crash(?:ing|ed|es)?|broke[n]?|"
+                         r"not\s+work(?:ing)?|won'?t\s+\w+|can'?t\s+\w+)\b", re.I)
+
+# Exploratory / brainstorming signals. [VALIDATE]
+_EXPLORE_SIGNALS = re.compile(
+    r"\b(brainstorm|ideas?\s+for|some\s+ideas|what\s+if|explore|options?\b|"
+    r"ways?\s+to|help\s+me\s+think|think\s+through|thoughts?\s+on|"
+    r"pros\s+and\s+cons|trade.?offs?|approach(?:es)?|alternatives?|"
+    r"how\s+(?:should|could|might)\s+i|what\s+(?:should|could)\s+i|"
+    r"brainstorming|riff\s+on|what\s+are\s+some)\b",
+    re.I,
+)
+
+
+def retrieval_mode(text: str, intent: "Intent | None" = None) -> str:
+    """Stage-1 (regex/heuristic) cognitive-mode classification. ~0ms.
+
+    Returns one of RETRIEVAL_MODES. The default for the ambiguous residual is
+    "factual" (tight, high-precision retrieval) — precision over recall, because
+    the observed problem is over-fetching. Callers may escalate "factual" to a
+    cheap-model pass (classify_mode, escalation gated by config).
+    """
+    t = (text or "").strip()
+    if not t:
+        return "no_context"
+
+    intent = intent if intent is not None else classify(t)
+
+    # 1. tool — deterministic local answer; nothing to retrieve.
+    if (intent.time_query or intent.math_expr or intent.unit_conv
+            or intent.stock_ticker or intent.weather_loc is not None
+            or intent.is_bare_local):
+        return "tool"
+
+    # 2. personal — explicit memory request or self-reflection.
+    if _MEM_WANT.search(t):
+        return "personal"
+
+    has_personal = bool(_PERSONAL.search(t))
+    is_skip = bool(_MEM_SKIP.match(t))
+
+    # 3. no_context — generic definition / generation / explanation with no
+    #    first-person signal. Beats technical so "explain how async works" gets
+    #    zero personal memory, not just personal-suppressed.
+    if is_skip and not has_personal:
+        return "no_context"
+
+    # 4. technical — code / debugging context.
+    if _TECH_SIGNALS.search(t) or (_TECH_ERROR.search(t) and has_personal):
+        return "technical"
+
+    # 5. exploratory — brainstorming / open-ended thinking.
+    if _EXPLORE_SIGNALS.search(t):
+        return "exploratory"
+
+    # 6. factual — tight, high-precision default (ambiguous residual).
+    return "factual"
+
+
+_MODE_LLM_SYSTEM = (
+    "Classify the user's message into ONE retrieval mode. Reply with ONLY the "
+    "single lowercase word, nothing else.\n"
+    "Modes:\n"
+    "- no_context: generic world-knowledge / code-gen / definition needing none "
+    "of the user's personal data.\n"
+    "- factual: a specific fact lookup that may depend on the user's own data.\n"
+    "- technical: debugging / code where prior technical context helps but "
+    "personal life details do not.\n"
+    "- exploratory: brainstorming / open-ended thinking that benefits from "
+    "broad, associative recall.\n"
+    "- personal: reflection about the user, or an explicit request to use what "
+    "you remember about them."
+)
+
+
+async def classify_mode(text: str, intent: "Intent | None" = None,
+                        escalate=None) -> str:
+    """Two-stage mode classification.
+
+    Stage 1 is always the regex pass. When `escalate` is provided (an async
+    callable taking messages -> str, e.g. llm.cheap) AND the regex result is the
+    ambiguous "factual" residual, escalate to the cheap model to refine. Any
+    failure or unrecognised reply falls back to the regex result — the gate must
+    never block a reply (hot-path rule 1).
+    """
+    mode = retrieval_mode(text, intent)
+    if escalate is None or mode != "factual":
+        return mode
+    try:
+        raw = await escalate(
+            [{"role": "system", "content": _MODE_LLM_SYSTEM},
+             {"role": "user", "content": (text or "")[:600]}]
+        )
+        guess = (raw or "").strip().lower().split()[0] if raw else ""
+        if guess in RETRIEVAL_MODES and guess != "tool":
+            return guess
+    except Exception:
+        pass
+    return mode
