@@ -351,7 +351,8 @@ async def retrieve(
     include_faded: bool = False,
     as_of: int | None = None,
     policy: dict | None = None,
-) -> list[dict]:
+    debug: bool = False,
+) -> list[dict] | dict:
     """Hybrid retrieval with Living Memory v2 decay and temporal filtering.
 
     include_faded: when True, include atoms whose effective_confidence is below
@@ -376,6 +377,37 @@ async def retrieve(
     suppress_personal = pol.get("suppress_personal", False)
     if policy is not None and pol.get("budget_tokens") is not None:
         budget_tokens = pol["budget_tokens"]
+
+    debug_trace = {
+        "policy": pol,
+        "suppressed_memories": [],
+        "candidate_counts": {},
+    } if debug else None
+
+    def _debug_atom(row: dict, reason: str) -> None:
+        if debug_trace is None:
+            return
+        debug_trace["suppressed_memories"].append({
+            "id": row.get("id"),
+            "text": (row.get("text") or "")[:240],
+            "reason": reason,
+            "modality": row.get("modality"),
+            "predicate": row.get("predicate"),
+            "status": row.get("status") or "active",
+            "score": row.get("score"),
+        })
+
+    def _debug_note(reason: str) -> None:
+        if debug_trace is None:
+            return
+        debug_trace["suppressed_memories"].append({
+            "id": None,
+            "text": reason,
+            "reason": reason,
+        })
+
+    if debug_trace is not None and not inject_memory:
+        _debug_note("ambient memory disabled by retrieval policy")
 
     # Single embed call — pre-serialized bytes shared by all vector functions.
     vec = await embeddings.embed(query)
@@ -422,6 +454,15 @@ async def retrieve(
     mem_scores = _rrf([numpy_ids, fts_ids])
     doc_scores = _rrf([doc_vec_ids, doc_fts_ids])
 
+    if debug_trace is not None:
+        debug_trace["candidate_counts"] = {
+            "numpy_memory": len(numpy_ids),
+            "fts_memory": len(fts_ids),
+            "pinned": len(pinned_ids),
+            "doc_vector": len(doc_vec_ids),
+            "doc_fts": len(doc_fts_ids),
+        }
+
     mem_candidate_ids = set(mem_scores) | pinned_ids
 
     doc_capped_ids = {
@@ -452,39 +493,61 @@ async def retrieve(
     # Apply fading filter: atoms with effective_confidence < threshold are
     # excluded from default retrieval (they remain visible via include_faded=True).
     if not include_faded:
+        before = dict(mem_rows)
         mem_rows = {
             k: v for k, v in mem_rows.items()
             if v.get("pinned") or _effective_confidence(v, now_ts) >= FADING_THRESHOLD
         }
+        for mid, row in before.items():
+            if mid not in mem_rows:
+                _debug_atom(row, "faded below confidence threshold")
 
     # Apply as_of filter: only return atoms whose validity range contained that timestamp.
     if as_of is not None:
+        before = dict(mem_rows)
         mem_rows = {
             k: v for k, v in mem_rows.items()
             if (v.get("valid_from") or 0) <= as_of
             and (v.get("valid_until") is None or v.get("valid_until") >= as_of)
         }
+        for mid, row in before.items():
+            if mid not in mem_rows:
+                _debug_atom(row, "outside requested time range")
 
     # Invariants G3f + G5f: suppression atoms and hypothesis atoms NEVER reach chat context.
     # W2 Visibility Law: a proposed/rejected inference is never "believed" — it
     # must not influence an answer until the user has confirmed it (status→active).
+    before = dict(mem_rows)
     mem_rows = {
         k: v for k, v in mem_rows.items()
         if v.get("predicate") != "suppressed"
         and v.get("modality") != "hypothesis"
         and (v.get("status") in (None, "active"))
     }
+    for mid, row in before.items():
+        if mid not in mem_rows:
+            if row.get("predicate") == "suppressed":
+                reason = "suppression-control atom"
+            elif row.get("modality") == "hypothesis":
+                reason = "hypothesis not eligible for chat context"
+            else:
+                reason = f"status is {row.get('status') or 'unknown'}"
+            _debug_atom(row, reason)
 
     # W1: technical mode suppresses personal-flavoured atoms (opinions, desires,
     # traits, self-perception) so a debugging turn doesn't pull in life facts.
     # Pinned atoms are never dropped.
     if suppress_personal:
+        before = dict(mem_rows)
         mem_rows = {
             k: v for k, v in mem_rows.items()
             if v.get("pinned")
             or (v.get("modality") not in _PERSONAL_MODALITIES
                 and v.get("predicate_category") not in _PERSONAL_CATEGORIES)
         }
+        for mid, row in before.items():
+            if mid not in mem_rows:
+                _debug_atom(row, "personal-flavoured memory suppressed for technical mode")
 
     # Prescient-only stale-self-image guard (P1.2): annotate superseded atoms.
     tier_row = await db.fetchone("SELECT value FROM app_config WHERE key='memory.tier'")
@@ -543,9 +606,15 @@ async def retrieve(
     for r in ordered:
         cost = _estimate_tokens(r["text"])
         if used + cost > budget_tokens and out:
+            if r.get("source_type") != "document":
+                _debug_atom(r, "trimmed by context budget")
             break
         out.append(r)
         used += cost
+    if debug_trace is not None:
+        debug_trace["returned_count"] = len(out)
+        debug_trace["used_tokens_estimate"] = used
+        return {"items": out, "debug": debug_trace}
     return out
 
 

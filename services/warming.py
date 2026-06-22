@@ -114,12 +114,22 @@ async def _blend_query_vec(session_id: str, project_id: str | None) -> bytes | N
     except Exception:
         pass
 
-    # 3. Due / overdue commitments
+    # 3. Due / overdue commitments. Only confirmed commitments shape warming;
+    # proposals are review-gated and must not influence retrieval/context.
     try:
         commits = await db.fetchall(
-            "SELECT title FROM task WHERE source_kind='assistant_commitment' "
-            "AND status='todo' ORDER BY created_at ASC LIMIT 5"
+            "SELECT c.title FROM commitment c "
+            "LEFT JOIN task t ON t.id=c.task_id "
+            "WHERE c.status='active' AND (t.status IS NULL OR t.status='todo') "
+            "ORDER BY c.created_at ASC LIMIT 5"
         )
+        if len(commits) < 5:
+            legacy = await db.fetchall(
+                "SELECT title FROM task WHERE source_kind='assistant_commitment' "
+                "AND status='todo' ORDER BY created_at ASC LIMIT ?",
+                (5 - len(commits),),
+            )
+            commits.extend(legacy)
         if commits:
             vecs = []
             for c in commits:

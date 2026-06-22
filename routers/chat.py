@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from services import config, db, http_client, llm, retrieval, search, sessions, skills
+from services import config, db, http_client, llm, memory, retrieval, search, sessions, skills
 from services import math_eval, weather, stock, local_tools
 from services import projects as projects_svc
 from services.intent import classify, Intent, retrieval_mode, classify_mode
@@ -54,6 +54,9 @@ _DEFAULTS = {
     # path (cost → latency → intelligence). [VALIDATE] whether enabling it earns
     # its latency on the labelled query set.
     "chat.mode_llm_escalation":    False,
+    # Developer/debug visibility: emit a typed SSE event after each turn showing
+    # retrieval, injection, extraction, review queue, and model routing.
+    "chat.debug_trace":           False,
 }
 
 
@@ -62,13 +65,13 @@ async def _cfg(key: str):
     default = _DEFAULTS.get(key)
     if val is None:
         return default
+    if isinstance(default, bool):
+        return str(val).lower() in ("1", "true", "yes")
     if isinstance(default, int):
         try:
             return int(val)
         except (ValueError, TypeError):
             return default
-    if isinstance(default, bool):
-        return str(val).lower() in ("1", "true", "yes")
     return val
 
 
@@ -319,6 +322,107 @@ def _inject_front(messages: list[dict], block: str) -> list[dict]:
     return [{"role": "system", "content": block}] + messages
 
 
+def _debug_atom(a: dict) -> dict:
+    return {
+        "id": a.get("id"),
+        "text": (a.get("text") or "")[:300],
+        "source_type": a.get("source_type") or a.get("type") or "memory",
+        "source_kind": a.get("source_kind"),
+        "source_id": a.get("source_id"),
+        "score": a.get("score"),
+        "modality": a.get("modality"),
+        "predicate": a.get("predicate"),
+        "status": a.get("status") or "active",
+        "filename": a.get("filename"),
+        "pinned": bool(a.get("pinned")),
+    }
+
+
+def _debug_context(system_context: str, blocks: list[tuple[str, str]]) -> dict:
+    max_chars = 6000
+    text = system_context or ""
+    return {
+        "text": text[:max_chars],
+        "truncated": len(text) > max_chars,
+        "chars": len(text),
+        "blocks": [
+            {"kind": kind, "chars": len(block or ""), "tokens_estimate": _tok(block or "")}
+            for kind, block in blocks
+            if block
+        ],
+    }
+
+
+async def _debug_review_state() -> dict:
+    learned = await memory.list_unreviewed_facts(limit=50)
+    proposed = await memory.list_inferences(status="proposed", limit=50)
+    qrow = await db.fetchone(
+        "SELECT COUNT(*) AS n FROM memory_question WHERE status='open'"
+    )
+    crow = await db.fetchone(
+        "SELECT COUNT(*) AS n FROM commitment WHERE status='proposed'"
+    )
+    return {
+        "unreviewed_facts": len(learned),
+        "proposed_inferences": len(proposed),
+        "open_questions": qrow["n"] if qrow else 0,
+        "proposed_commitments": crow["n"] if crow else 0,
+    }
+
+
+async def _run_debug_extraction(
+    *,
+    user_text: str,
+    assistant_text: str,
+    source_id: str | None,
+    project_id: str | None,
+    memory_off: bool,
+) -> dict:
+    if not (user_text or assistant_text) or memory_off:
+        return {"extraction_skipped": "memory disabled or empty turn"}
+
+    from workers.extraction import _significance_score, extract_memory
+
+    min_chars = 20
+    if len(user_text) < min_chars and _significance_score(user_text) <= 0:
+        return {"extraction_skipped": "below hot-path significance gate"}
+
+    return await extract_memory({
+        "user_text": user_text,
+        "assistant_text": assistant_text,
+        "source_kind": "chat",
+        "source_id": source_id,
+        "project_id": project_id,
+        "memory_off": memory_off,
+        "debug_inline": True,
+    }) or {}
+
+
+async def _queue_extraction_if_needed(
+    *,
+    user_text: str,
+    assistant_text: str,
+    source_id: str | None,
+    project_id: str | None,
+    memory_off: bool,
+) -> None:
+    if not (user_text or assistant_text) or memory_off:
+        return
+
+    from workers.extraction import _significance_score
+
+    min_chars = 20
+    if len(user_text) >= min_chars or _significance_score(user_text) > 0:
+        await jobs.enqueue("extract_memory", {
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+            "source_kind": "chat",
+            "source_id": source_id,
+            "project_id": project_id,
+            "memory_off": memory_off,
+        })
+
+
 # ── Main endpoint ─────────────────────────────────────────────────────────────
 
 @router.post("/chat/stream")
@@ -349,6 +453,8 @@ async def chat_stream(request: Request):
     card_bare    = await _cfg("chat.card_bare_query_only")
     stall_t      = int(await _cfg("chat.stream_stall_timeout_s"))
     dead_t       = int(await _cfg("chat.stream_dead_timeout_s"))
+    debug_on     = bool(body.get("debug")) or bool(await _cfg("chat.debug_trace"))
+    mode_classifier = "cheap-model" if await _cfg("chat.mode_llm_escalation") else "regex"
 
     # [0] CLASSIFY
     intent = classify(user_text) if user_text else Intent()
@@ -378,6 +484,29 @@ async def chat_stream(request: Request):
             if k in body:
                 payload[k] = body[k]
 
+        debug_trace = None
+        if debug_on:
+            debug_trace = {
+                "intent_mode": "chat_only",
+                "retrieved_memories": [],
+                "retrieved_documents": [],
+                "suppressed_memories": [{
+                    "id": None,
+                    "text": "chat-only turn; retrieval skipped",
+                    "reason": "chat-only turn; retrieval skipped",
+                }],
+                "retrieval": {"candidate_counts": {}, "returned_count": 0},
+                "injected_context": _debug_context(persona, [("persona", persona)]),
+                "memory_atoms_created": [],
+                "derived_atoms_proposed": [],
+                "review_state": None,
+                "model_used": {
+                    "chat": model,
+                    "cheap": await config.get_setting("cheap_model"),
+                    "mode_classifier": "none (chat-only)",
+                },
+            }
+
         async def generate_chat_only():
             assistant_chunks: list[str] = []
             try:
@@ -392,35 +521,49 @@ async def chat_stream(request: Request):
                     async for line in resp.aiter_lines():
                         if not line:
                             continue
-                        yield f"{line}\n\n"
                         if line.startswith("data: "):
                             ds = line[6:].strip()
-                            if ds and ds != "[DONE]":
+                            if ds == "[DONE]":
+                                continue
+                            if ds:
                                 try:
                                     delta = json.loads(ds)["choices"][0]["delta"].get("content")
                                     if delta:
                                         assistant_chunks.append(delta)
                                 except Exception:
                                     pass
+                        yield f"{line}\n\n"
             except Exception as e:
                 yield _evt("error", {"code": "stream_error", "message": str(e)})
             finally:
-                yield "data: [DONE]\n\n"
                 assistant_text = "".join(assistant_chunks).strip()
                 if session_id and user_text:
                     await sessions.add_message(session_id, "user", user_text, model)
                 if session_id and assistant_text:
                     await sessions.add_message(session_id, "assistant", assistant_text, model)
-                # Hot-path extraction gate: skip if memory_off or phatic turn
-                if (user_text or assistant_text) and not memory_off:
-                    from workers.extraction import _significance_score
-                    min_chars = 20
-                    if len(user_text) >= min_chars or _significance_score(user_text) > 0:
-                        await jobs.enqueue("extract_memory", {
-                            "user_text": user_text, "assistant_text": assistant_text,
-                            "source_kind": "chat", "source_id": session_id,
-                            "project_id": project_id, "memory_off": memory_off,
-                        })
+                if debug_trace is not None:
+                    extraction_debug = await _run_debug_extraction(
+                        user_text=user_text,
+                        assistant_text=assistant_text,
+                        source_id=session_id,
+                        project_id=project_id,
+                        memory_off=memory_off,
+                    )
+                    debug_trace["memory_atoms_created"] = extraction_debug.get("memory_atoms_created", [])
+                    debug_trace["derived_atoms_proposed"] = extraction_debug.get("derived_atoms_proposed", [])
+                    if extraction_debug.get("extraction_skipped"):
+                        debug_trace["extraction_skipped"] = extraction_debug["extraction_skipped"]
+                    debug_trace["review_state"] = await _debug_review_state()
+                    yield _evt("debug", debug_trace)
+                else:
+                    await _queue_extraction_if_needed(
+                        user_text=user_text,
+                        assistant_text=assistant_text,
+                        source_id=session_id,
+                        project_id=project_id,
+                        memory_off=memory_off,
+                    )
+                yield "data: [DONE]\n\n"
 
         return StreamingResponse(
             generate_chat_only(), media_type="text/event-stream",
@@ -487,7 +630,7 @@ async def chat_stream(request: Request):
         # Memory + docs (scoped to project when inside one). The W1 policy gates
         # which sources are queried and at what precision for this cognitive mode.
         retrieval.retrieve(user_text, budget_tokens=mem_budget, project_id=project_id,
-                           policy=retr_policy)
+                           policy=retr_policy, debug=debug_on)
             if user_text and not clock_data and not card_data else _noop(),
         # Web search
         _run_web_search(user_text, search_queries, results_per_query, max_searches) if do_search else _noop(),
@@ -504,7 +647,14 @@ async def chat_stream(request: Request):
     atoms_result, web_result, weather_result, stock_result, manifest_result = gather_results
 
     # Safe-unwrap (return_exceptions=True means failed legs are Exceptions)
-    atoms    = atoms_result if isinstance(atoms_result, list) else []
+    retrieval_debug: dict = {}
+    if isinstance(atoms_result, dict):
+        atoms = atoms_result.get("items", [])
+        retrieval_debug = atoms_result.get("debug") or {}
+    elif isinstance(atoms_result, list):
+        atoms = atoms_result
+    else:
+        atoms = []
     web_resp = web_result   if isinstance(web_result, dict) else None
     w_data   = weather_result if isinstance(weather_result, dict) and not isinstance(weather_result, Exception) else None
     s_data   = stock_result   if isinstance(stock_result, dict) and not isinstance(stock_result, Exception) else None
@@ -678,15 +828,25 @@ async def chat_stream(request: Request):
     mem_block = retrieval.format_block(gated_atoms)
     doc_filenames = retrieval.doc_sources(gated_atoms)
 
-    # Commitments block (M5): inject due/overdue assistant promises
+    # Commitments block (W5): inject confirmed, still-open commitments. Proposed
+    # commitments stay out of context until the user confirms them.
     try:
         commitment_rows = await db.fetchall(
-            "SELECT t.title, t.created_at FROM task t "
-            "WHERE t.source_kind='assistant_commitment' AND t.status='todo' "
-            "ORDER BY t.created_at ASC LIMIT 3"
+            "SELECT c.title, c.created_at FROM commitment c "
+            "LEFT JOIN task t ON t.id=c.task_id "
+            "WHERE c.status='active' AND (t.status IS NULL OR t.status='todo') "
+            "ORDER BY c.created_at ASC LIMIT 3"
         )
+        if len(commitment_rows) < 3:
+            legacy_rows = await db.fetchall(
+                "SELECT t.title, t.created_at FROM task t "
+                "WHERE t.source_kind='assistant_commitment' AND t.status='todo' "
+                "ORDER BY t.created_at ASC LIMIT ?",
+                (3 - len(commitment_rows),),
+            )
+            commitment_rows.extend(legacy_rows)
         if commitment_rows:
-            commit_lines = ["[COMMITMENTS] Promises you made in previous sessions:"]
+            commit_lines = ["[COMMITMENTS] Confirmed open commitments to track:"]
             for row in commitment_rows:
                 commit_lines.append(f"- {row['title']}")
             context_blocks.append(("memory", "\n".join(commit_lines)))
@@ -745,6 +905,37 @@ async def chat_stream(request: Request):
 
     # Assemble with total budget
     system_context = assemble_context(context_blocks, total_budget)
+
+    debug_trace = None
+    if debug_on:
+        suppressed = list(retrieval_debug.get("suppressed_memories") or [])
+        if not retrieval_debug and (clock_data or card_data):
+            suppressed.append({
+                "id": None,
+                "text": "deterministic local answer; retrieval skipped",
+                "reason": "deterministic local answer; retrieval skipped",
+            })
+        debug_trace = {
+            "intent_mode": retr_mode,
+            "retrieved_memories": [_debug_atom(a) for a in mem_atoms_all],
+            "retrieved_documents": [_debug_atom(a) for a in doc_atoms_all],
+            "suppressed_memories": suppressed,
+            "retrieval": {
+                "policy": retrieval_debug.get("policy") or retr_policy or {},
+                "candidate_counts": retrieval_debug.get("candidate_counts") or {},
+                "returned_count": retrieval_debug.get("returned_count", len(atoms)),
+                "used_tokens_estimate": retrieval_debug.get("used_tokens_estimate"),
+            },
+            "injected_context": _debug_context(system_context, context_blocks),
+            "memory_atoms_created": [],
+            "derived_atoms_proposed": [],
+            "review_state": None,
+            "model_used": {
+                "chat": model,
+                "cheap": await config.get_setting("cheap_model"),
+                "mode_classifier": mode_classifier,
+            },
+        }
     messages = _inject_front(messages, system_context)
 
     payload = {"model": model, "messages": messages, "stream": True}
@@ -767,12 +958,10 @@ async def chat_stream(request: Request):
             if clock_data:
                 yield _legacy_evt("atelier_clock", clock_data)
                 yield _evt("clock", clock_data)
-                yield "data: [DONE]\n\n"
                 return
 
             if card_data:
                 yield _evt("card", card_data)
-                yield "data: [DONE]\n\n"
                 return
 
             # Suggest web search (proactive freshness)
@@ -856,10 +1045,11 @@ async def chat_stream(request: Request):
 
                         last_byte_time = _time.monotonic()
                         stalled_announced = False
-                        yield f"{line}\n\n"  # pass-through for frontend token accumulation
 
                         if line.startswith("data: "):
                             data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                continue
                             if data_str and data_str != "[DONE]":
                                 try:
                                     delta = json.loads(data_str)["choices"][0]["delta"].get("content")
@@ -870,6 +1060,7 @@ async def chat_stream(request: Request):
                                             yield _evt("status", "streaming")
                                 except Exception:
                                     pass
+                        yield f"{line}\n\n"  # pass-through for frontend token accumulation
                 finally:
                     pump_task.cancel()
 
@@ -883,24 +1074,34 @@ async def chat_stream(request: Request):
             else:
                 yield _evt("error", {"code": "stream_error", "message": str(e)})
         finally:
-            yield "data: [DONE]\n\n"
             # [5] PERSIST — always, regardless of exit path
             assistant_text = "".join(assistant_chunks).strip()
             if session_id and assistant_text:
                 await sessions.add_message(session_id, "assistant", assistant_text, model)
-            # Hot-path extraction gate: skip if memory_off or too short
-            if (user_text or assistant_text) and not memory_off:
-                from workers.extraction import _significance_score
-                min_chars = 20
-                if len(user_text) >= min_chars or _significance_score(user_text) > 0:
-                    await jobs.enqueue("extract_memory", {
-                        "user_text": user_text,
-                        "assistant_text": assistant_text,
-                        "source_kind": "chat",
-                        "source_id": session_id,
-                        "project_id": project_id,
-                        "memory_off": memory_off,
-                    })
+            if debug_trace is not None:
+                extraction_debug = await _run_debug_extraction(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    source_id=session_id,
+                    project_id=project_id,
+                    memory_off=memory_off,
+                )
+                debug_trace["memory_atoms_created"] = extraction_debug.get("memory_atoms_created", [])
+                debug_trace["derived_atoms_proposed"] = extraction_debug.get("derived_atoms_proposed", [])
+                if extraction_debug.get("extraction_skipped"):
+                    debug_trace["extraction_skipped"] = extraction_debug["extraction_skipped"]
+                debug_trace["review_state"] = await _debug_review_state()
+                yield _evt("debug", debug_trace)
+            else:
+                await _queue_extraction_if_needed(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    source_id=session_id,
+                    project_id=project_id,
+                    memory_off=memory_off,
+                )
+            yield "data: [DONE]\n\n"
+            return
 
     return StreamingResponse(
         generate(), media_type="text/event-stream",

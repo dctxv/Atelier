@@ -123,9 +123,34 @@ CREATE TABLE IF NOT EXISTS task (
     description TEXT,
     status      TEXT DEFAULT 'todo',
     priority    TEXT DEFAULT 'medium',
+    source_kind TEXT,
+    source_id   TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_task_source ON task(source_kind, source_id);
+
+-- ── Commitments ──────────────────────────────────────────────────────────────
+-- Proposed commitments are review-gated. Confirming one creates/links a task;
+-- rejecting one leaves no task behind.
+CREATE TABLE IF NOT EXISTS commitment (
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    description  TEXT,
+    status       TEXT DEFAULT 'proposed', -- proposed | active | rejected | done
+    source_kind  TEXT DEFAULT 'chat',
+    source_id    TEXT,                    -- e.g. session id
+    atom_id      TEXT,                    -- extracted memory atom that triggered it
+    task_id      TEXT,                    -- created only after confirmation
+    context_json TEXT,                    -- JSON links/evidence
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    confirmed_at INTEGER,
+    rejected_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_commitment_status ON commitment(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_commitment_atom   ON commitment(atom_id);
+CREATE INDEX IF NOT EXISTS idx_commitment_task   ON commitment(task_id);
 
 -- ── Skills (pre-existing; drives chat system-prompt injection) ───────────────
 CREATE TABLE IF NOT EXISTS skill (

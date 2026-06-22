@@ -256,6 +256,39 @@ carry their type. All five pure-Python/DB suites green together.
 
 ---
 
+### W5 - Commitment layer done
+Tasks is now the daily-driver spine for commitments, but extracted commitments
+are review-gated: a task is not silently created until Clay confirms the
+commitment.
+
+- **`services/schema.sql`** - added first-class `commitment` table:
+  `proposed | active | rejected | done`, with source session, source atom,
+  linked task, and JSON context/provenance.
+- **`services/commitments.py`** - proposal lifecycle:
+  `propose_from_atom()` creates a proposed commitment from extraction output,
+  `confirm()` creates/links the task, `reject()` suppresses without a task, and
+  `sync_task_status()` closes the commitment when the task is completed.
+- **`workers/extraction.py`** - commitment atoms now route to a proposed
+  commitment instead of directly inserting a task. The extraction prompt also
+  treats concrete user promises ("I'm going to...") as commitment candidates,
+  while vague wishes stay desire/plan.
+- **`routers/tasks.py`** - `GET /commitments`,
+  `POST /commitments/{id}/confirm`, and `POST /commitments/{id}/reject`.
+- **`static/tasks.jsx`** - real Tasks surface replacing the placeholder:
+  open tasks, proposed commitments with Confirm/Reject, completed tasks, inline
+  editing, priorities, completion, deletion.
+- **`routers/chat.py` + `services/warming.py`** - only confirmed active
+  commitments can influence chat context or memory warming. Proposed commitments
+  remain invisible until reviewed.
+
+**Tests** - `scripts/test_commitments.py` (DB-backed, no model, 5/5): extraction
+creates a proposed commitment but no task, confirm creates/links exactly one
+task, completing the task closes the commitment, and reject creates no task.
+Existing W1/W2/W3/W6 deterministic suites remain green; `static/tasks.jsx` and
+`static/app.jsx` transform through the bundled Babel runtime.
+
+---
+
 ## 4a. W7 surface triage — DECISION (confirmed with Clay)
 
 | Surface | Call | Rationale |
@@ -265,8 +298,10 @@ carry their type. All five pure-Python/DB suites green together.
 | **Email** | **CUT** | No named daily use. |
 | **Export** | **CUT** | No named daily use. |
 
-Cuts will be executed as a dedicated change (clean removal, no broken
-routes/JSX) per the W7 acceptance gate, sequenced with W5.
+Cuts are still pending as a dedicated cleanup (clean removal, no broken
+routes/JSX) per the W7 acceptance gate. They were not folded into W5 because
+Projects/Email touch wider backend routes and schedulers; the commitment spine
+was kept as a smaller, independently testable change.
 
 ---
 
@@ -274,9 +309,8 @@ routes/JSX) per the W7 acceptance gate, sequenced with W5.
 
 1. **W1 tuning:** confirm the six-mode set and the precision/recall defaults in
    `MODE_POLICIES` once measured against real failure cases.
-2. **W7 keep-or-cut:** Projects, Tasks, Email, Export — decide before building
-   W4/W5 breadth. (Tasks likely *keep* as the W5 spine; commitment→task plumbing
-   already exists.)
+2. **W7 cuts:** execute the confirmed cuts for Projects, Email, and Export as a
+   focused cleanup.
 3. **W4 artifact type:** which single artifact type matters most for daily use.
 4. **Contextual Retrieval:** fold contextual-chunk prepending into W1's relevance
    push, or keep it a separate Documents-pipeline change.

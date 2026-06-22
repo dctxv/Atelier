@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 
-from services import db, llm, memory, config
+from services import commitments, config, db, llm, memory
 from . import jobs
 
 MAX_ATOMS = 50_000
@@ -126,7 +125,9 @@ Additional rules:
 8. Linguistic certainty: "I think maybe" ≈ 0.4; flat declaratives ≈ 0.9.
    Modality caps: factual≤0.95, plan≤0.85, desire≤0.80, hypothetical≤0.60.
 9. Always render text in ENGLISH.
-10. Assistant promises: "I'll remind you at 9pm" → modality="commitment".
+10. Commitments: concrete "I will / I'll / I'm going to" promises by the user
+    or assistant → modality="commitment". Do not create obligations for vague
+    wishes; use desire/plan instead.
 11. Only extract things worth remembering across sessions. If nothing: return [].
 '''
 
@@ -158,6 +159,34 @@ async def _get_config(key: str, default):
         return type(default)(val)
     except Exception:
         return default
+
+
+def _debug_atom(atom: dict | None) -> dict | None:
+    if not atom:
+        return None
+    meta = atom.get("meta") or {}
+    return {
+        "id": atom.get("id"),
+        "text": atom.get("text"),
+        "type": atom.get("type"),
+        "source_kind": atom.get("source_kind"),
+        "source_id": atom.get("source_id"),
+        "modality": atom.get("modality"),
+        "predicate": atom.get("predicate"),
+        "confidence": atom.get("confidence"),
+        "status": atom.get("status") or "active",
+        "inference_kind": meta.get("inference_kind"),
+        "source_atom_ids": meta.get("source_atom_ids") or [],
+    }
+
+
+async def _debug_atoms(atom_ids: list[str]) -> list[dict]:
+    out: list[dict] = []
+    for atom_id in atom_ids:
+        atom = _debug_atom(await memory.get_atom(atom_id))
+        if atom:
+            out.append(atom)
+    return out
 
 
 # ── Reconciliation (M1 foundation — full M2 reconciliation is in memory.py) ───
@@ -213,9 +242,19 @@ async def extract_memory(payload: dict):
     user_text = (payload.get("user_text") or "").strip()
     assistant_text = (payload.get("assistant_text") or "").strip()
     memory_off = payload.get("memory_off", False)
+    debug_inline = bool(payload.get("debug_inline"))
+    debug_result = {
+        "memory_atoms_created": [],
+        "derived_atoms_proposed": [],
+        "extraction_skipped": None,
+    }
+
+    def _skip(reason: str) -> dict:
+        debug_result["extraction_skipped"] = reason
+        return debug_result
 
     if memory_off or (not user_text and not assistant_text):
-        return
+        return _skip("memory disabled or empty turn")
 
     # Tier gate: block only if explicitly disabled.
     # If never configured (None), auto-enable at basic so extraction works out of the box.
@@ -225,7 +264,7 @@ async def extract_memory(payload: dict):
         await config.set_setting("memory.tier", "basic")
         await config.set_setting("memory.depth", "basic")
     elif str(tier_raw).lower() != "true":
-        return
+        return _skip("memory tier disabled")
 
     source_kind = payload.get("source_kind", "chat")
     source_id   = payload.get("source_id")
@@ -246,7 +285,7 @@ async def extract_memory(payload: dict):
     score = _significance_score(user_text)
 
     if score < signif_low:
-        return  # clearly not significant
+        return _skip("below worker significance threshold")
 
     if score < signif_high:
         # Ambiguous band: ask model for a quick yes/no
@@ -260,7 +299,7 @@ async def extract_memory(payload: dict):
                 max_tokens=5,
             )
             if "no" in (verdict or "").lower():
-                return
+                return _skip("cheap-model significance check said no")
         except Exception:
             pass  # model unavailable → proceed with extraction
 
@@ -280,7 +319,7 @@ async def extract_memory(payload: dict):
             max_tokens=800,
         )
     except Exception:
-        return  # no model available; extraction simply doesn't happen this turn
+        return _skip("cheap model unavailable for extraction")
 
     items = _parse_json_array(raw)
 
@@ -387,9 +426,10 @@ async def extract_memory(payload: dict):
             if atom and atom["id"] != old_id:
                 await memory.supersede_atom(old_id, atom["id"])
 
-        # Route commitments with a due time to the task table
+        # Route commitments to a review-gated commitment object. Confirming the
+        # commitment creates the task; extraction never silently creates one.
         if modality == "commitment" and assistant_text:
-            await _route_commitment(atom, source_id)
+            await _route_commitment(atom, source_id, user_text, assistant_text)
 
         # Hypothesis testing (Fix 5) — only for prescient tier, never on the hot path
         # (extraction is already background; hypothesis testing is a cheap model call)
@@ -405,37 +445,38 @@ async def extract_memory(payload: dict):
     if created_atom_ids and source_kind == "chat":
         turn_min = await _get_config("memory.turn_inference_min_signif", 0.5)
         if score >= turn_min:
-            await jobs.enqueue("infer_turn", {
+            infer_payload = {
                 "user_text": user_text,
                 "assistant_text": assistant_text,
                 "atom_ids": created_atom_ids,
                 "source_id": source_id,
                 "project_id": project_id,
-            })
+            }
+            if debug_inline:
+                from workers.memory_inference import infer_turn
+                debug_result["derived_atoms_proposed"] = await infer_turn(infer_payload) or []
+            else:
+                await jobs.enqueue("infer_turn", infer_payload)
+
+    debug_result["memory_atoms_created"] = await _debug_atoms(created_atom_ids)
+    if not created_atom_ids and debug_result["extraction_skipped"] is None:
+        debug_result["extraction_skipped"] = "model extracted no memory atoms"
+    return debug_result
 
 
-async def _route_commitment(atom: dict, session_id: str | None) -> None:
-    """Create a task row for an assistant commitment atom."""
+async def _route_commitment(
+    atom: dict,
+    session_id: str | None,
+    user_text: str = "",
+    assistant_text: str = "",
+) -> None:
+    """Create a proposed commitment. Tasks are created only after confirmation."""
     try:
-        ts = db.now()
-        task_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO task(id, title, description, status, priority, created_at, updated_at, source_kind, source_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                task_id,
-                atom["text"][:200],
-                f"Assistant commitment from session {session_id or 'unknown'}",
-                "todo",
-                "medium",
-                ts,
-                ts,
-                "assistant_commitment",
-                atom["id"],
-            ),
+        await commitments.propose_from_atom(
+            atom, session_id, user_text=user_text, assistant_text=assistant_text
         )
     except Exception:
-        pass  # task creation is best-effort; never break extraction
+        pass  # commitment proposal is best-effort; never break extraction
 
 
 # ── Consolidation (periodic janitor) ─────────────────────────────────────────

@@ -178,6 +178,82 @@ function MoveMenu({ projectId, onMove, onClose }) {
   );
 }
 
+function DebugTrace({ data }) {
+  if (!data) return null;
+  const memories = Array.isArray(data.retrieved_memories) ? data.retrieved_memories : [];
+  const docs = Array.isArray(data.retrieved_documents) ? data.retrieved_documents : [];
+  const suppressed = Array.isArray(data.suppressed_memories) ? data.suppressed_memories : [];
+  const created = Array.isArray(data.memory_atoms_created) ? data.memory_atoms_created : [];
+  const derived = Array.isArray(data.derived_atoms_proposed) ? data.derived_atoms_proposed : [];
+  const injected = data.injected_context || {};
+  const blocks = Array.isArray(injected.blocks) ? injected.blocks : [];
+
+  function itemText(item) {
+    if (!item) return '';
+    const label = item.filename || item.reason || item.predicate || item.modality || item.source_kind || item.type || 'item';
+    const text = item.text || item.id || '';
+    return `${label}: ${text}`;
+  }
+  function rowList(items) {
+    if (!items.length) return <span style={{color:'var(--text-3)'}}>none</span>;
+    return (
+      <div style={{display:'grid',gap:3}}>
+        {items.slice(0, 10).map((item, i) => (
+          <div key={item.id || i} style={{
+            overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+            color:'var(--text-q)',
+          }}>
+            {itemText(item)}
+          </div>
+        ))}
+        {items.length > 10 && <div style={{color:'var(--text-3)'}}>+{items.length - 10} more</div>}
+      </div>
+    );
+  }
+  function field(label, value) {
+    return (
+      <div style={{display:'grid',gridTemplateColumns:'140px minmax(0,1fr)',gap:10,alignItems:'start'}}>
+        <div style={{color:'var(--text-3)'}}>{label}:</div>
+        <div style={{minWidth:0}}>{value}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      marginTop:12,marginBottom:12,padding:'10px 12px',
+      border:'1px solid var(--border-2)',borderRadius:8,
+      background:'var(--surface)',fontFamily:'var(--font-m)',fontSize:10.5,
+      lineHeight:1.5,color:'var(--text-q)',
+    }}>
+      <div style={{display:'grid',gap:6}}>
+        {field('Intent mode', <span>{data.intent_mode || 'unknown'}</span>)}
+        {field('Retrieved memories', rowList(memories))}
+        {field('Retrieved documents', rowList(docs))}
+        {field('Suppressed memories', rowList(suppressed))}
+        {field('Injected context', (
+          <details open>
+            <summary style={{cursor:'pointer',color:'var(--text-q)'}}>
+              {blocks.length ? blocks.map(b => `${b.kind} ${b.tokens_estimate || 0}t`).join(', ') : 'none'}
+              {injected.truncated ? ' (truncated)' : ''}
+            </summary>
+            <pre style={{
+              margin:'6px 0 0',maxHeight:180,overflow:'auto',whiteSpace:'pre-wrap',
+              fontFamily:'var(--font-m)',fontSize:10,color:'var(--text-3)',
+              borderTop:'1px solid var(--border)',paddingTop:6,
+            }}>{injected.text || 'none'}</pre>
+          </details>
+        ))}
+        {field('Memory atoms created', rowList(created))}
+        {field('Derived atoms proposed', rowList(derived))}
+        {field('Review state', <span>{JSON.stringify(data.review_state || {})}</span>)}
+        {field('Model used', <span>{JSON.stringify(data.model_used || {})}</span>)}
+        {data.extraction_skipped && field('Extraction', <span>{data.extraction_skipped}</span>)}
+      </div>
+    </div>
+  );
+}
+
 function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings, onNav, onPlay, activeProject, onExitProject, projectId, onMoved, openSessionId, onConsumeOpen }) {
   // projectId set → this chat is embedded inside a project: all session list/
   // create/seed calls are scoped to it, and the global localStorage cache is
@@ -192,6 +268,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
   const [streamCard,   setStreamCard]   = useState(null);  // NEW: local-answer card
   const [streamDocs,   setStreamDocs]   = useState(null);
   const [streamProv,   setStreamProv]   = useState(null);  // NEW: provenance chips
+  const [streamDebug,  setStreamDebug]  = useState(null);
   const [streamStatus, setStreamStatus] = useState('thinking'); // NEW: 'thinking'|'searching'|'computing'|'recalling'|'streaming'
   const [streamSearchDegraded, setStreamSearchDegraded] = useState(false); // NEW
   const [suggestWeb,   setSuggestWeb]   = useState(false); // NEW: proactive freshness
@@ -365,7 +442,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
 
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
-  }, [activeId, sessions, streamBuf, composer]);
+  }, [activeId, sessions, streamBuf, streamDebug, composer]);
 
   const session = sessions.find(s=>s.id===activeId) || sessions[0] || null;
 
@@ -485,7 +562,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
 
     setStreaming(true); setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null);
     setStreamCard(null); setStreamStatus('thinking'); setStreamSearchDegraded(false); setSuggestWeb(false);
-    setStreamProv(null);
+    setStreamProv(null); setStreamDebug(null);
     setThinking(true);
 
     const controller = new AbortController();
@@ -494,6 +571,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     let clockData   = null;
     let cardData    = null;
     let provData    = null;
+    let debugData   = null;
 
     try {
       const resp = await fetch('/api/chat/stream', {
@@ -531,6 +609,8 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                   setStreamDocs(evt.data); break;
                 case 'provenance':
                   provData = evt.data; setStreamProv(provData); break;
+                case 'debug':
+                  debugData = evt.data; setStreamDebug(debugData); setThinking(false); break;
                 case 'search':
                   if (evt.data.degraded) {
                     setStreamSearchDegraded(true);
@@ -583,16 +663,17 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
       }
 
       const aiMsg = { role:'assistant', content:accumulated, model, search:searchTrace,
-                      clock:clockData, card:cardData, docs:streamDocs, prov:provData };
+                      clock:clockData, card:cardData, docs:streamDocs, prov:provData,
+                      debug:debugData };
       setSessions(prev => prev.map(s => s.id===activeId
         ? {...s, messages:[...updatedMsgs, aiMsg]} : s));
       setStreamBuf(''); setStreamSearch(null); setStreamClock(null); setStreamDocs(null);
       setStreamCard(null); setStreamStatus('thinking'); setSuggestWeb(false); setThinking(false);
-      setStreamProv(null);
+      setStreamProv(null); setStreamDebug(null);
     } catch(e) {
       if (e.name!=='AbortError') setError('Stream failed — check your model connection.');
     } finally {
-      setStreaming(false); setThinking(false); setStreamClock(null); abortRef.current = null;
+      setStreaming(false); setThinking(false); setStreamClock(null); setStreamDebug(null); abortRef.current = null;
     }
   }
 
@@ -617,6 +698,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
     } else if (msg.role==='assistant') {
       renderedMsgs.push({type:'ai',key:`a${i}`,text:msg.content,model:msg.model,
         search:msg.search,clock:msg.clock,card:msg.card,docs:msg.docs,prov:msg.prov,
+        debug:msg.debug,
         createdAt:msg.created_at,
         isLast:i===msgs.length-1&&!streaming});
     }
@@ -702,6 +784,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 {item.prov && <ProvenanceChips prov={item.prov} onNav={onNav}/>}
                 {item.text && <AiBlock text={item.text} model={item.model} isLast={item.isLast}
                   timestamp={fmtTime(createdAt)}/>}
+                {item.debug && <DebugTrace data={item.debug}/>}
               </div>
             );
           }
@@ -757,7 +840,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 ))}
               </div>
             )}
-            {!streamBuf && !streamSearch && !streamCard && !streamClock && (
+            {!streamBuf && !streamSearch && !streamCard && !streamClock && !streamDebug && (
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
                 <ModelBadge model={activeModel}/>
                 <span style={{color:'var(--text-3)',fontSize:10}}>—</span>
@@ -767,7 +850,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
               </div>
             )}
             {/* Specific status lines — shown continuously until the first token */}
-            {!streamBuf && !streamSearch && !streamCard && !streamClock && (() => {
+            {!streamBuf && !streamSearch && !streamCard && !streamClock && !streamDebug && (() => {
               const statusLabel = {
                 thinking:   'Thinking…',
                 searching:  'Searching the web…',
@@ -788,6 +871,7 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
             {streamBuf && (
               <AiBlock text={streamBuf} model={activeModel} streaming={true}/>
             )}
+            {streamDebug && <DebugTrace data={streamDebug}/>}
           </div>
         )}
         {error && (

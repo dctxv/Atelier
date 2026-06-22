@@ -7,6 +7,7 @@ const { MemorySurface }     = window.V2Memory;
 const { NotesSurface }      = window.V2Notes;
 const { ScratchpadSurface } = window.V2Scratchpad;
 const { ProjectsSurface }   = window.V2Projects;
+const { TasksSurface }      = window.V2Tasks;
 const { DocumentsSurface }  = window;
 const { SettingsSurface }   = window;
 
@@ -90,6 +91,7 @@ function App() {
       case 'memory':    return <MemorySurface/>;
       case 'notes':     return <NotesSurface/>;
       case 'scratchpad':return <ScratchpadSurface/>;
+      case 'tasks':     return <TasksSurface/>;
       case 'documents': return <DocumentsSurface/>;
       case 'settings':  return <SettingsSurface initialSection={settingsSection}/>;
       default:          return <Placeholder name={surface.charAt(0).toUpperCase()+surface.slice(1)}/>;

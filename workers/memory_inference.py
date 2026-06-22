@@ -136,6 +136,20 @@ def _parse_json_array(raw: str) -> list:
         return []
 
 
+def _debug_atom(atom: dict) -> dict:
+    meta = atom.get("meta") or {}
+    return {
+        "id": atom.get("id"),
+        "text": atom.get("text"),
+        "type": atom.get("type"),
+        "modality": atom.get("modality"),
+        "confidence": atom.get("confidence"),
+        "status": atom.get("status") or "proposed",
+        "inference_kind": meta.get("inference_kind"),
+        "source_atom_ids": meta.get("source_atom_ids") or [],
+    }
+
+
 def _digest(atoms: list[dict]) -> str:
     """Compact, stably-indexed corpus view for the model."""
     lines = []
@@ -236,15 +250,15 @@ async def infer_turn(payload: dict | None = None):
     """
     payload = payload or {}
     if not await _cfg("memory.turn_inference_enabled"):
-        return
+        return []
     if str(await config.get_setting("memory.tier_selected") or "").lower() != "true":
-        return
+        return []
 
     user_text = (payload.get("user_text") or "").strip()
     assistant_text = (payload.get("assistant_text") or "").strip()
     atom_ids = payload.get("atom_ids") or []
     if not user_text or not atom_ids:
-        return  # nothing concrete to anchor an inference to
+        return []  # nothing concrete to anchor an inference to
 
     max_new = await _cfg("memory.turn_inference_max_new")
     convo = f"User: {user_text}\nAssistant: {assistant_text}".strip()[:1500]
@@ -257,9 +271,10 @@ async def infer_turn(payload: dict | None = None):
             task="memory_inference",
         )
     except Exception:
-        return
+        return []
 
     created = 0
+    proposed: list[dict] = []
     for item in _parse_json_array(raw):
         if created >= max_new or not isinstance(item, dict):
             break
@@ -282,6 +297,8 @@ async def infer_turn(payload: dict | None = None):
         )
         if atom:
             created += 1
+            proposed.append(_debug_atom(atom))
+    return proposed
 
 
 def register_schedule():
