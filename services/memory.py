@@ -503,6 +503,95 @@ async def provenance(atom_id: str) -> list[dict]:
     ]
 
 
+# ── W6: extraction visibility & steering ──────────────────────────────────────
+# What the system learned from conversations, made visible and correctable. A
+# stated fact is believed immediately (extraction is trusted) but stays in the
+# review queue until the user accepts it; rejecting it is *signal* — the triple is
+# remembered so extraction won't silently re-learn it.
+
+_SUPPRESS_KEY = "memory.extraction_suppressions"
+_SUPPRESS_MAX = 300
+
+
+def _triple_key(subject, predicate, object_val) -> str | None:
+    s = (subject or "").lower().strip()
+    p = (predicate or "").lower().strip()
+    if not s or not p:
+        return None
+    o = (object_val or "").lower().strip()
+    return f"{s}\x01{p}\x01{o}"
+
+
+async def list_unreviewed_facts(limit: int = 50) -> list[dict]:
+    """Recent extraction output (stated facts) the user hasn't reviewed yet."""
+    rows = await db.fetchall(
+        "SELECT * FROM memory_atom "
+        "WHERE source_kind='chat' AND (status='active' OR status IS NULL) "
+        "AND (modality IS NULL OR modality NOT IN ('insight','hypothesis')) "
+        "ORDER BY created_at DESC LIMIT 400",
+    )
+    out: list[dict] = []
+    for r in rows:
+        a = _row_to_atom(r)
+        if (a.get("meta") or {}).get("reviewed"):
+            continue
+        out.append(a)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def mark_reviewed(atom_id: str) -> bool:
+    """Accept an extracted fact: dismiss it from the review queue (keep believed)."""
+    existing = await get_atom(atom_id)
+    if not existing:
+        return False
+    meta = existing.get("meta") or {}
+    meta["reviewed"] = True
+    await db.execute(
+        "UPDATE memory_atom SET meta=? WHERE id=?", (json.dumps(meta), atom_id)
+    )
+    await db.bump_mutation_seq()
+    await log_event(atom_id, "reviewed", {"action": "accepted"})
+    return True
+
+
+async def add_rejection_signal(atom: dict) -> None:
+    """Record a rejected triple so extraction won't silently re-learn it (W6 →
+    feeds the gate). Best-effort, capped, deduped."""
+    key = _triple_key(atom.get("subject"), atom.get("predicate"), atom.get("object"))
+    if not key:
+        return
+    raw = await db.fetchone("SELECT value FROM app_config WHERE key=?", (_SUPPRESS_KEY,))
+    try:
+        lst = json.loads(raw["value"]) if raw and raw.get("value") else []
+    except Exception:
+        lst = []
+    if key in lst:
+        return
+    lst.append(key)
+    if len(lst) > _SUPPRESS_MAX:
+        lst = lst[-_SUPPRESS_MAX:]
+    await db.execute(
+        "INSERT INTO app_config(key, value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_SUPPRESS_KEY, json.dumps(lst)),
+    )
+
+
+async def is_extraction_suppressed(subject, predicate, object_val) -> bool:
+    """True when a triple was previously rejected by the user (W6 steering)."""
+    key = _triple_key(subject, predicate, object_val)
+    if not key:
+        return False
+    raw = await db.fetchone("SELECT value FROM app_config WHERE key=?", (_SUPPRESS_KEY,))
+    try:
+        lst = json.loads(raw["value"]) if raw and raw.get("value") else []
+    except Exception:
+        return False
+    return key in lst
+
+
 async def surface_contradiction(atom_ids: list[str], prompt_text: str,
                                 kind: str = "contradiction") -> str | None:
     """Surface a detected conflict for the user to reconcile (do NOT auto-resolve).

@@ -203,6 +203,35 @@ endpoint exists. Tests now cover 10 deterministic checks.
 
 ---
 
+### W6 — Extraction visibility & steering ✅
+The human-in-the-loop spine that makes inferred memory trustworthy. Clay can see
+what each conversation taught the system and correct it; rejections are signal.
+
+- **`services/memory.py`** — steering primitives: `list_unreviewed_facts()` (the
+  review queue), `mark_reviewed()` (accept = dismiss, stays believed),
+  `add_rejection_signal()` / `is_extraction_suppressed()` (a rejected
+  subject·predicate·object is remembered in `app_config` so it isn't re-learned).
+- **`workers/extraction.py`** — `_reconcile_before_insert()` now checks the
+  suppression list first and returns `skip` for a previously-rejected triple, so
+  **a rejection measurably changes future extraction** (the W6 acceptance gate).
+  Also enqueues `infer_turn` (W2 per-turn reads) after significant turns.
+- **`routers/memory.py`** — `GET /memory/review` (learned facts + proposed
+  inferences with provenance), `POST /memory/review/{id}/accept|reject`
+  (polymorphic: proposed inferences route through the W2 lifecycle, facts through
+  accept/reject). Edit reuses `PUT /memory/{id}`.
+- **`static/memory.jsx`** — the living-tier **Review** tab is now the steering
+  surface: *Recently learned* (Keep / Edit / Reject), *Proposed inferences*
+  (Confirm / Reject, with expandable evidence/provenance), and *To reconcile*
+  (existing conflicts/tensions). The tab badge counts learned + proposed + open
+  questions. JSX verified to transform via the bundled Babel.
+
+**Tests** — `scripts/test_steering.py` (DB-backed, no model, 4/4): queue surfaces
+extraction output, accept dismisses while keeping the fact believed, **rejection
+suppresses re-learning in the reconciler**, and rejecting a proposed inference
+reuses the W2 lifecycle.
+
+---
+
 ## 4a. W7 surface triage — DECISION (confirmed with Clay)
 
 | Surface | Call | Rationale |

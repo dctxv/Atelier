@@ -623,6 +623,56 @@ async def reject_inferred(atom_id: str):
     return {"ok": True}
 
 
+# ── W6: extraction visibility & steering ──────────────────────────────────────
+
+@router.get("/memory/review")
+async def get_review_queue():
+    """What the system recently learned, awaiting the user's accept/reject/edit:
+    extracted facts + proposed inferences (with provenance)."""
+    learned = [_legacy(a) for a in await memory.list_unreviewed_facts(limit=50)]
+    proposed_raw = await memory.list_inferences(status="proposed", limit=50)
+    proposed = [
+        {**_legacy(a), "inference_kind": a.get("inference_kind", "inferred"),
+         "provenance": a.get("provenance", [])}
+        for a in proposed_raw
+    ]
+    return {
+        "learned": learned,
+        "proposed": proposed,
+        "counts": {"learned": len(learned), "proposed": len(proposed),
+                   "total": len(learned) + len(proposed)},
+    }
+
+
+@router.post("/memory/review/{atom_id}/accept")
+async def accept_review(atom_id: str):
+    """Accept what was learned. A proposed inference is promoted to believed; a
+    stated fact is simply dismissed from the queue (it was already believed)."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.confirm_inference(atom_id)
+    else:
+        await memory.mark_reviewed(atom_id)
+    return {"ok": True}
+
+
+@router.post("/memory/review/{atom_id}/reject")
+async def reject_review(atom_id: str):
+    """Reject what was learned. A proposed inference is suppressed; a stated fact
+    is retracted and its triple remembered so it isn't silently re-learned."""
+    atom = await memory.get_atom(atom_id)
+    if not atom:
+        raise HTTPException(404, "Atom not found")
+    if atom.get("status") == "proposed":
+        await memory.reject_inference(atom_id)
+    else:
+        await memory.add_rejection_signal(atom)
+        await memory.retract_atom(atom_id, "user_rejected_extraction")
+    return {"ok": True}
+
+
 @router.get("/memory/{atom_id}/provenance")
 async def get_provenance(atom_id: str):
     """The source atoms a derived (inferred) atom was inferred from."""

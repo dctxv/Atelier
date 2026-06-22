@@ -175,6 +175,11 @@ async def _reconcile_before_insert(item: dict, project_id: str | None) -> str:
     if not subject or not predicate or non_literal:
         return "insert"
 
+    # W6 steering: if the user previously rejected this exact triple, don't
+    # silently re-learn it (a rejection measurably influences future extraction).
+    if await memory.is_extraction_suppressed(subject, predicate, obj):
+        return "skip"
+
     # Find existing active atoms with same (subject, predicate)
     existing_rows = await db.fetchall(
         "SELECT * FROM memory_atom "
