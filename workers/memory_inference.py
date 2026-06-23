@@ -32,6 +32,8 @@ _DEFAULTS = {
     "memory.inference_min_evidence": 2,     # min source atoms to form an inference
     "memory.inference_max_new":      12,    # cap new inferences per pass
     "memory.inference_cadence_h":    24,    # how often the pass runs
+    "intake.inference_min_evidence": 3,     # min distinct source sessions for per-turn inference [VALIDATE]
+    "intake.inference_budget":       2,     # max proposed derived atoms per pass [VALIDATE]
     # Per-turn "read the unsaid" inference (Ex2). Background, cheap-model, gated.
     "memory.turn_inference_enabled":    True,
     "memory.turn_inference_min_signif": 0.5,  # only meaningful turns [VALIDATE]
@@ -174,8 +176,8 @@ async def infer_memory(payload: dict | None = None):
         return
 
     max_atoms    = await _cfg("memory.inference_max_atoms")
-    min_evidence = await _cfg("memory.inference_min_evidence")
-    max_new      = await _cfg("memory.inference_max_new")
+    min_evidence = await _cfg("intake.inference_min_evidence")
+    max_new      = await _cfg("intake.inference_budget")
 
     # Corpus = stated facts only (exclude existing inferences + hypotheses).
     rows = await db.fetchall(
@@ -190,7 +192,7 @@ async def infer_memory(payload: dict | None = None):
         return
 
     try:
-        raw = await llm.cheap(
+        raw = await llm.cheap_strict(
             [{"role": "system", "content": _INFER_SYSTEM},
              {"role": "user", "content": _digest(atoms)}],
             temperature=0.2,
@@ -260,10 +262,17 @@ async def infer_turn(payload: dict | None = None):
     if not user_text or not atom_ids:
         return []  # nothing concrete to anchor an inference to
 
-    max_new = await _cfg("memory.turn_inference_max_new")
+    max_new = min(
+        await _cfg("memory.turn_inference_max_new"),
+        await _cfg("intake.inference_budget"),
+    )
+    min_evidence = await _cfg("intake.inference_min_evidence")
+    if await memory.distinct_source_count(list(atom_ids)) < min_evidence:
+        return []
+
     convo = f"User: {user_text}\nAssistant: {assistant_text}".strip()[:1500]
     try:
-        raw = await llm.cheap(
+        raw = await llm.cheap_strict(
             [{"role": "system", "content": _TURN_SYSTEM},
              {"role": "user", "content": convo}],
             temperature=0.2,

@@ -243,7 +243,11 @@ async def apply_clustering_result(
             if atom_id in assignments:
                 continue
             conn.execute(
-                "UPDATE memory_atom SET cluster_dirty=0 WHERE id=?",
+                "UPDATE memory_atom SET "
+                "cluster_dirty=0, "
+                "strand_id=CASE WHEN NOT (status='active' OR status IS NULL) THEN NULL ELSE strand_id END, "
+                "strand_assigned_at=CASE WHEN NOT (status='active' OR status IS NULL) THEN NULL ELSE strand_assigned_at END "
+                "WHERE id=?",
                 (atom_id,),
             )
 

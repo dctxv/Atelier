@@ -15,7 +15,7 @@ import asyncio
 import json
 import uuid
 
-from . import db, embeddings
+from . import config, db, embeddings
 
 DEDUP_THRESHOLD = 0.92
 CORROB_STEP     = 0.3   # diminishing-returns corroboration step
@@ -31,6 +31,16 @@ INFERENCE_BASE_CONFIDENCE = 0.5   # lower than stated facts by default [VALIDATE
 INFERENCE_DEDUP_THRESHOLD = 0.90  # similarity above which an inference is a dup [VALIDATE]
 INFERENCE_CORROB_STEP     = 0.34  # how fast a re-sighted inference gains confidence [VALIDATE]
 INFERENCE_CORROB_CAP      = 0.90  # an inference never reaches stated-fact certainty [VALIDATE]
+
+
+async def _cfg_float(key: str, default: float) -> float:
+    val = await config.get_setting(key)
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
 
 
 def _row_to_atom(r: dict) -> dict:
@@ -353,7 +363,8 @@ async def _existing_inference(text: str, subject, predicate, object_val,
         "ORDER BY v.distance LIMIT 1",
         (db.serialize_f32(vec),),
     )
-    if rows and (1.0 - rows[0]["distance"]) >= INFERENCE_DEDUP_THRESHOLD:
+    threshold = await _cfg_float("intake.inference_novelty_threshold", 0.85)
+    if rows and (1.0 - rows[0]["distance"]) >= threshold:
         return rows[0]["id"]
     return None
 
@@ -367,6 +378,7 @@ async def add_inference(
     object_val: str | None = None,
     confidence: float | None = None,
     project_id: str | None = None,
+    allow_new: bool = True,
 ) -> dict | None:
     """Mint a *derived* atom (Visibility Law: status='proposed', invisible to
     retrieval until confirmed). Provenance is the list of source atom ids it was
@@ -380,7 +392,8 @@ async def add_inference(
         return None
     subject   = (subject or "").lower().strip() or None
     predicate = (predicate or "").lower().strip() or None
-    conf = INFERENCE_BASE_CONFIDENCE if confidence is None else max(0.05, min(0.9, confidence))
+    base_conf = await _cfg_float("intake.inference_base_confidence", INFERENCE_BASE_CONFIDENCE)
+    conf = base_conf if confidence is None else max(0.05, min(0.9, confidence))
 
     vec = await embeddings.embed(text)
     dup_id = await _existing_inference(text, subject, predicate, object_val, vec)
@@ -389,6 +402,8 @@ async def add_inference(
         # (but never to) stated-fact certainty, boosts salience, and merges the
         # new evidence into provenance. Re-running stays idempotent (no new row).
         return await _corroborate_inference(dup_id, list(source_atom_ids or []))
+    if not allow_new:
+        return None
 
     meta = {
         "inference": True,
@@ -421,9 +436,11 @@ async def _corroborate_inference(atom_id: str, new_sources: list[str]) -> dict |
     existing = await get_atom(atom_id)
     if not existing:
         return None
-    old_conf = existing.get("confidence") or INFERENCE_BASE_CONFIDENCE
-    new_conf = min(INFERENCE_CORROB_CAP,
-                   old_conf + (INFERENCE_CORROB_CAP - old_conf) * INFERENCE_CORROB_STEP)
+    base_conf = await _cfg_float("intake.inference_base_confidence", INFERENCE_BASE_CONFIDENCE)
+    step = await _cfg_float("intake.inference_corroboration_step", INFERENCE_CORROB_STEP)
+    cap = await _cfg_float("intake.inference_corroboration_cap", INFERENCE_CORROB_CAP)
+    old_conf = existing.get("confidence") or base_conf
+    new_conf = min(cap, old_conf + (cap - old_conf) * step)
     new_sal = min(5.0, (existing.get("salience") or 0.6) + 0.2)
     meta = existing.get("meta") or {}
     merged = list(dict.fromkeys((meta.get("source_atom_ids") or []) + (new_sources or [])))
@@ -438,6 +455,45 @@ async def _corroborate_inference(atom_id: str, new_sources: list[str]) -> dict |
                     {"old_conf": old_conf, "new_conf": new_conf,
                      "sightings": meta["sightings"]})
     return await get_atom(atom_id)
+
+
+async def distinct_source_count(atom_ids: list[str]) -> int:
+    """Count distinct provenance sources for evidence gating.
+
+    Chat atoms use their session/source id as the unit; atoms without a stable
+    source id count individually so manual fixtures can still exercise the gate.
+    """
+    ids = sorted({aid for aid in (atom_ids or []) if aid})
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    rows = await db.fetchall(
+        f"SELECT id, source_kind, source_id FROM memory_atom WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    sources: set[tuple[str, str]] = set()
+    for row in rows:
+        kind = row.get("source_kind") or "unknown"
+        source_id = row.get("source_id")
+        if source_id:
+            sources.add((kind, source_id))
+        else:
+            sources.add((kind, row["id"]))
+    return len(sources)
+
+
+async def retire_atom(atom_id: str, reason: str = "pruned") -> bool:
+    """Soft-retire an atom without deleting its row, vector, or audit history."""
+    existing = await db.fetchone("SELECT id FROM memory_atom WHERE id=?", (atom_id,))
+    if not existing:
+        return False
+    await db.execute(
+        "UPDATE memory_atom SET status='retired', cluster_dirty=1 WHERE id=?",
+        (atom_id,),
+    )
+    await db.bump_mutation_seq()
+    await log_event(atom_id, "retired", {"reason": reason})
+    return True
 
 
 async def confirm_inference(atom_id: str) -> bool:

@@ -161,6 +161,81 @@ async def _get_config(key: str, default):
         return default
 
 
+_DEFAULT_SENSITIVE_CATEGORIES = ("health", "relationships", "finances")
+_SENSITIVE_KEYWORDS = {
+    "health": (
+        "health", "medical", "medicine", "medication", "diagnosed", "diagnosis",
+        "therapy", "therapist", "doctor", "illness", "disease", "condition",
+        "hospital", "pain", "depression", "anxiety", "adhd", "autism", "trauma",
+    ),
+    "relationships": (
+        "relationship", "partner", "spouse", "wife", "husband", "girlfriend",
+        "boyfriend", "dating", "married", "divorced", "breakup", "family",
+        "parent", "child", "sibling",
+    ),
+    "finances": (
+        "salary", "income", "debt", "loan", "mortgage", "bank", "account",
+        "savings", "tax", "rent", "credit card", "net worth", "investment",
+    ),
+}
+
+
+async def _sensitive_categories() -> set[str]:
+    raw = await config.get_setting("intake.sensitive_categories")
+    if not raw:
+        return set(_DEFAULT_SENSITIVE_CATEGORIES)
+    if isinstance(raw, (list, tuple, set)):
+        return {str(v).strip().lower() for v in raw if str(v).strip()}
+    text = str(raw).strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return {str(v).strip().lower() for v in parsed if str(v).strip()}
+    except Exception:
+        pass
+    return {part.strip().lower() for part in text.split(",") if part.strip()}
+
+
+async def _is_sensitive_fact(item: dict, text: str) -> bool:
+    categories = await _sensitive_categories()
+    if not categories:
+        return False
+    haystack = " ".join(
+        str(v or "")
+        for v in (
+            text,
+            item.get("predicate"),
+            item.get("object"),
+            item.get("modality"),
+            item.get("predicate_category"),
+        )
+    ).lower()
+    for category in categories:
+        for keyword in _SENSITIVE_KEYWORDS.get(category, (category,)):
+            if keyword and keyword in haystack:
+                return True
+    return False
+
+
+async def _should_auto_confirm_fact(
+    *,
+    item: dict,
+    text: str,
+    confidence: float,
+    source_kind: str,
+) -> tuple[bool, str]:
+    if source_kind != "chat":
+        return False, "untrusted_source"
+    if (item.get("modality") or "").lower() in ("insight", "hypothesis"):
+        return False, "derived_or_hypothetical"
+    threshold = await _get_config("intake.fact_autoconfirm_confidence", 0.90)
+    if confidence < threshold:
+        return False, "below_confidence"
+    if await _is_sensitive_fact(item, text):
+        return False, "sensitive"
+    return True, "high_confidence_trusted_stated_fact"
+
+
 def _debug_atom(atom: dict | None) -> dict | None:
     if not atom:
         return None
@@ -378,7 +453,8 @@ async def extract_memory(payload: dict):
         if subject and subject != "user":
             confidence = min(confidence, confidence * 0.8)
 
-        # Build meta
+        # Build meta. Review is post-hoc cleanup, not a retrieval gate: stated
+        # facts are already active, so auto-confirm means "skip review queue".
         meta: dict = {}
         if confidence <= 0.3:
             meta["non_literal"] = True
@@ -397,6 +473,17 @@ async def extract_memory(payload: dict):
         action = await _reconcile_before_insert(item, project_id)
         if action == "skip":
             continue
+
+        auto_confirm, auto_confirm_reason = await _should_auto_confirm_fact(
+            item=item,
+            text=text,
+            confidence=confidence,
+            source_kind=source_kind,
+        )
+        if auto_confirm:
+            meta["reviewed"] = True
+            meta["reviewed_reason"] = "auto"
+            meta["reviewed_at"] = db.now()
 
         atom = await memory.add_atom(
             text=text,
@@ -420,6 +507,18 @@ async def extract_memory(payload: dict):
 
         if atom:
             created_atom_ids.append(atom["id"])
+            atom_meta = atom.get("meta") or {}
+            if atom_meta.get("reviewed") and atom_meta.get("reviewed_reason") == "auto":
+                await memory.log_event(
+                    atom["id"],
+                    "reviewed",
+                    {
+                        "action": "accepted",
+                        "reason": "auto",
+                        "policy": auto_confirm_reason,
+                        "confidence": confidence,
+                    },
+                )
 
         # Supersede old atoms for functional/comparative predicates
         for old_id in item.get("_supersede_ids", []):
@@ -444,7 +543,8 @@ async def extract_memory(payload: dict):
     # so cost stays bounded (cost ceiling first).
     if created_atom_ids and source_kind == "chat":
         turn_min = await _get_config("memory.turn_inference_min_signif", 0.5)
-        if score >= turn_min:
+        inference_min = await _get_config("intake.inference_significance", 0.75)
+        if score >= max(turn_min, inference_min):
             infer_payload = {
                 "user_text": user_text,
                 "assistant_text": assistant_text,
@@ -534,6 +634,40 @@ async def consolidate_memory(payload: dict | None = None):
 
 # ── Calibration job (weekly) ──────────────────────────────────────────────────
 
+@jobs.register("prune_memory_review_queue")
+async def prune_memory_review_queue(payload: dict | None = None):
+    """Soft-retire old, unreviewed, low-confidence stated atoms."""
+    floor = await _get_config("prune.confidence_floor", 0.40)
+    ttl_days = await _get_config("prune.pending_ttl_days", 21)
+    cutoff = db.now() - int(ttl_days * 86400)
+    rows = await db.fetchall(
+        "SELECT * FROM memory_atom "
+        "WHERE source_kind='chat' AND (status='active' OR status IS NULL) "
+        "AND pinned=0 "
+        "AND (modality IS NULL OR modality NOT IN ('insight','hypothesis')) "
+        "AND created_at < ? "
+        "AND (confidence IS NULL OR confidence < ?) "
+        "ORDER BY created_at ASC LIMIT 500",
+        (cutoff, floor),
+    )
+    retired = 0
+    for row in rows:
+        atom = memory._row_to_atom(row)
+        meta = atom.get("meta") or {}
+        if meta.get("reviewed"):
+            continue
+        sightings = int(meta.get("sightings") or 1)
+        if sightings > 1:
+            continue
+        created_at = atom.get("created_at") or 0
+        last_used_at = atom.get("last_used_at") or created_at
+        if last_used_at and created_at and last_used_at > created_at:
+            continue
+        if await memory.retire_atom(atom["id"], "review_queue_prune"):
+            retired += 1
+    return {"ok": True, "retired": retired}
+
+
 @jobs.register("calibrate_memory")
 async def calibrate_memory(payload: dict | None = None):
     """Read recent resolution events and update calibration blob in app_config."""
@@ -571,6 +705,11 @@ def register_schedule():
         lambda: jobs.enqueue("consolidate_memory"),
         seconds=6 * 3600,
         job_id="consolidate_memory",
+    )
+    jobs.add_periodic(
+        lambda: jobs.enqueue("prune_memory_review_queue"),
+        seconds=24 * 3600,
+        job_id="prune_memory_review_queue",
     )
     jobs.add_periodic(
         lambda: jobs.enqueue("calibrate_memory"),
