@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from services import auth, db, http_client, importer, metrics
 # Importing these modules registers their job handlers with the queue.
-from workers import cards, cowriter, documents as documents_worker, email as email_worker, extraction, jobs, memory_inference, memory_prescient, research, weekly_diff  # noqa: F401
+from workers import cards, clustering as clustering_worker, cowriter, documents as documents_worker, email as email_worker, extraction, jobs, memory_inference, memory_prescient, research, weekly_diff  # noqa: F401
 from routers import (
     auth as auth_router,
     chat,
@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
     email_worker.register_schedule()
     memory_inference.register_schedule()
     memory_prescient.register_schedule()
+    clustering_worker.register_schedule()
     weekly_diff.register_schedule()
     await jobs.start()
 

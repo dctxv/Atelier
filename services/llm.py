@@ -136,6 +136,26 @@ async def cheap(
     return await _post_chat(ep, model, messages, temperature, max_tokens, task)
 
 
+async def cheap_strict(
+    messages: list[dict],
+    temperature: float = 0.2,
+    max_tokens: int | None = 512,
+    task: str = "unknown",
+) -> str:
+    """Use only the explicitly configured cheap model.
+
+    Unlike cheap(), this never falls back to active_model. Background features
+    with hard cost ceilings use this helper to fail closed.
+    """
+    ep = await config.active_endpoint_raw()
+    if not ep:
+        raise RuntimeError("No active endpoint configured")
+    model = await config.get_setting("cheap_model")
+    if not model:
+        raise RuntimeError("No cheap model selected")
+    return await _post_chat(ep, model, messages, temperature, max_tokens, task)
+
+
 async def route(
     task: str,
     messages: list[dict],

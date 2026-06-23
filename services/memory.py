@@ -60,6 +60,9 @@ def _row_to_atom(r: dict) -> dict:
         "status":             r.get("status") or "active",
         "superseded_by":      r.get("superseded_by"),
         "meta":               json.loads(r["meta"]) if r.get("meta") else None,
+        "strand_id":          r.get("strand_id"),
+        "strand_assigned_at": r.get("strand_assigned_at"),
+        "cluster_dirty":      bool(r.get("cluster_dirty", 0)),
     }
 
 
@@ -145,14 +148,15 @@ async def add_atom(
             "id, text, type, salience, source_kind, source_id, "
             "created_at, last_used_at, pinned, project_id, "
             "subject, predicate, predicate_category, object, polarity, intensity, "
-            "modality, confidence, valid_from, valid_until, temporal_raw, status, meta"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "modality, confidence, valid_from, valid_until, temporal_raw, status, meta, "
+            "cluster_dirty"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 atom_id, text, type_, salience, source_kind, source_id,
                 ts, ts, int(pinned), project_id,
                 subject, predicate, predicate_category, object_val,
                 polarity, intensity, modality, confidence, vf, valid_until,
-                temporal_raw, status, meta_str,
+                temporal_raw, status, meta_str, 1,
             ),
         )
         rid = conn.execute("SELECT rowid FROM memory_atom WHERE id=?", (atom_id,)).fetchone()[0]
@@ -215,9 +219,11 @@ async def update_atom(
 
     def op(conn):
         rid = conn.execute("SELECT rowid FROM memory_atom WHERE id=?", (atom_id,)).fetchone()[0]
+        membership_changed = isinstance(text, str) or status is not None
         conn.execute(
             "UPDATE memory_atom SET "
-            "text=?, type=?, pinned=?, confidence=?, status=?, valid_until=?, superseded_by=?, meta=? "
+            "text=?, type=?, pinned=?, confidence=?, status=?, valid_until=?, superseded_by=?, meta=?, "
+            "cluster_dirty=CASE WHEN ? THEN 1 ELSE cluster_dirty END "
             "WHERE id=?",
             (
                 new_text,
@@ -228,6 +234,7 @@ async def update_atom(
                 valid_until if valid_until is not None else existing.get("valid_until"),
                 superseded_by if superseded_by is not None else existing.get("superseded_by"),
                 meta_val,
+                int(membership_changed),
                 atom_id,
             ),
         )
@@ -273,7 +280,7 @@ async def retract_atom(atom_id: str, reason: str = "user") -> bool:
     if not existing:
         return False
     await db.execute(
-        "UPDATE memory_atom SET status='retracted', confidence=0.0 WHERE id=?",
+        "UPDATE memory_atom SET status='retracted', confidence=0.0, cluster_dirty=1 WHERE id=?",
         (atom_id,),
     )
     await db.bump_mutation_seq()
@@ -288,7 +295,7 @@ async def supersede_atom(old_id: str, new_id: str) -> bool:
         return False
     ts = db.now()
     await db.execute(
-        "UPDATE memory_atom SET status='superseded', superseded_by=?, valid_until=? WHERE id=?",
+        "UPDATE memory_atom SET status='superseded', superseded_by=?, valid_until=?, cluster_dirty=1 WHERE id=?",
         (new_id, ts, old_id),
     )
     await db.bump_mutation_seq()
@@ -440,7 +447,7 @@ async def confirm_inference(atom_id: str) -> bool:
     row = await db.fetchone("SELECT id, status FROM memory_atom WHERE id=?", (atom_id,))
     if not row:
         return False
-    await db.execute("UPDATE memory_atom SET status='active' WHERE id=?", (atom_id,))
+    await db.execute("UPDATE memory_atom SET status='active', cluster_dirty=1 WHERE id=?", (atom_id,))
     await db.bump_mutation_seq()
     await log_event(atom_id, "inference_confirmed", None)
     from .retrieval import _ensure_knn_cache
@@ -455,7 +462,7 @@ async def reject_inference(atom_id: str) -> bool:
     if not row:
         return False
     await db.execute(
-        "UPDATE memory_atom SET status='rejected', confidence=0.0 WHERE id=?", (atom_id,)
+        "UPDATE memory_atom SET status='rejected', confidence=0.0, cluster_dirty=1 WHERE id=?", (atom_id,)
     )
     await db.bump_mutation_seq()
     await log_event(atom_id, "inference_rejected", None)

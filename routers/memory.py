@@ -36,6 +36,7 @@ def _legacy(atom: dict) -> dict:
         "status":             atom.get("status") or "active",
         "valid_from":         atom.get("valid_from"),
         "valid_until":        atom.get("valid_until"),
+        "strand_id":          atom.get("strand_id"),
     }
 
 
@@ -199,48 +200,29 @@ async def get_timeline(
     ?subject=              — list all predicates for a subject.
     """
     if strand:
-        # P1.1: Strand timeline — gather all (subject, predicate) chains for the strand
-        registry = await strands.load_registry()
-        if not registry:
-            from services.strands import _STATIC_BUNDLES
-            registry = _STATIC_BUNDLES
-        strand_def = next((s for s in registry if s["id"] == strand), None)
+        strand_def = (
+            {"id": "_unstranded", "name": "Unsorted"}
+            if strand == "_unstranded"
+            else await strands.get_strand(strand)
+        )
         if not strand_def:
             raise HTTPException(404, "Strand not found")
 
-        predicates_in_strand = strand_def.get("predicates", [])
-        subjects_in_strand = strand_def.get("subjects", [])
+        grouped: dict[str, list[dict]] = {}
+        for atom in await strands.atoms_for_strand(strand):
+            subj = atom.get("subject") or "legacy"
+            pred = atom.get("predicate") or "memory"
+            grouped.setdefault(f"{subj}:{pred}", []).append(atom)
 
-        # Build chains for all predicates (across all subjects)
         chains: dict = {}
-        for pred in predicates_in_strand:
-            # Find all distinct subjects with this predicate
-            subj_rows = await db.fetchall(
-                "SELECT DISTINCT subject FROM memory_atom "
-                "WHERE predicate=? AND subject IS NOT NULL",
-                (pred,),
+        for key, atoms in grouped.items():
+            chains[key] = sorted(
+                atoms,
+                key=lambda a: (
+                    a.get("valid_from") or a.get("created_at") or 0,
+                    a.get("id") or "",
+                ),
             )
-            for sr in subj_rows:
-                s = sr["subject"]
-                chain = await _build_chain(s, pred)
-                if chain:
-                    key = f"{s}:{pred}"
-                    chains[key] = chain
-
-        # Also chains for explicit subjects
-        for subj in subjects_in_strand:
-            pred_rows = await db.fetchall(
-                "SELECT DISTINCT predicate FROM memory_atom "
-                "WHERE subject=? AND predicate IS NOT NULL",
-                (subj,),
-            )
-            for pr in pred_rows:
-                pred_val = pr["predicate"]
-                key = f"{subj}:{pred_val}"
-                if key not in chains:
-                    chain = await _build_chain(subj, pred_val)
-                    if chain:
-                        chains[key] = chain
 
         # Compute span
         all_atoms = [a for chain in chains.values() for a in chain]
@@ -379,28 +361,23 @@ async def get_atom_events(memory_id: str):
 @router.get("/memory/strands")
 async def get_strands():
     """List all strands with membership counts."""
-    registry = await strands.load_registry()
-    result = []
-    for s in registry:
-        atom_count = len(await strands.atoms_for_strand(s["id"]))
-        result.append({
-            "id": s["id"],
-            "name": s["name"],
-            "kind": s.get("kind", "static"),
-            "predicates": s.get("predicates", []),
-            "subjects": s.get("subjects", []),
-            "atom_count": atom_count,
-        })
-    # Also an unstranded count
-    all_active = await db.fetchall(
-        "SELECT id, predicate, subject FROM memory_atom "
-        "WHERE (status='active' OR status IS NULL) AND predicate != 'suppressed'"
+    result = await strands.load_registry()
+    row = await db.fetchone(
+        "SELECT COUNT(*) AS n FROM memory_atom "
+        "WHERE strand_id IS NULL AND (status='active' OR status IS NULL) "
+        "AND COALESCE(predicate,'') != 'suppressed'"
     )
-    stranded_ids: set[str] = set()
-    for s in registry:
-        for a in await strands.atoms_for_strand(s["id"]):
-            stranded_ids.add(a["id"])
-    unstranded_count = sum(1 for r in all_active if r["id"] not in stranded_ids)
+    unstranded_count = row["n"] if row else 0
+    if unstranded_count:
+        result.append({
+            "id": "_unstranded",
+            "name": "Unsorted",
+            "label": "Unsorted",
+            "kind": "system",
+            "atom_count": unstranded_count,
+            "status": "active",
+            "color": "#9A8A78",
+        })
     return {"strands": result, "unstranded_count": unstranded_count}
 
 
@@ -421,33 +398,23 @@ def _graph_atom(a: dict) -> dict:
 
 @router.get("/memory/graph")
 async def get_memory_graph():
-    """Constellation graph payload — strands and their member atoms.
-
-    Strand membership is resolved server-side (predicate/subject bundles in
-    services.strands). Atoms claimed by no strand fall into 'unstranded' (Misc).
-    An atom may appear under multiple strands; the frontend renders one strand's
-    atoms at a time, so node ids stay unique within a view.
-    """
+    """Constellation graph payload: one assigned strand per atom."""
     registry = await strands.load_registry()
-    if not registry:
-        from services.strands import _STATIC_BUNDLES
-        registry = _STATIC_BUNDLES
 
     result_strands = []
-    stranded_ids: set[str] = set()
     for s in registry:
         atoms = await strands.atoms_for_strand(s["id"])
-        for a in atoms:
-            stranded_ids.add(a["id"])
         result_strands.append({
             "id":    s["id"],
             "name":  s["name"],
-            "kind":  s.get("kind", "static"),
+            "label": s.get("label"),
+            "kind":  s.get("kind", "emergent"),
+            "color": s.get("color"),
+            "glyph": s.get("glyph"),
             "atoms": [_graph_atom(a) for a in atoms],
         })
 
-    all_atoms = await memory.list_atoms(limit=100_000)
-    unstranded = [_graph_atom(a) for a in all_atoms if a["id"] not in stranded_ids]
+    unstranded = [_graph_atom(a) for a in await strands.atoms_for_strand("_unstranded")]
 
     return {"strands": result_strands, "unstranded": unstranded}
 
@@ -459,13 +426,29 @@ async def update_strand(strand_id: str, request: Request):
     name = (data.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "Name required")
-    registry = await strands.load_registry()
-    for s in registry:
-        if s["id"] == strand_id:
-            s["name"] = name
-            await strands.save_registry(registry)
-            return {"ok": True}
-    raise HTTPException(404, "Strand not found")
+    if strand_id == "_unstranded":
+        raise HTTPException(400, "Unsorted cannot be renamed")
+    existing = await strands.get_strand(strand_id)
+    if not existing:
+        raise HTTPException(404, "Strand not found")
+    label_vec = None
+    try:
+        import numpy as np
+        from services import embeddings
+        label_vec = np.asarray(await embeddings.embed(name), dtype=np.float32)
+    except Exception:
+        pass
+    await strands.upsert_strand(
+        strand_id,
+        label=name,
+        label_embedding=label_vec,
+        centroid=None,
+        atom_count=existing.get("atom_count", 0),
+        status=existing.get("status", "active"),
+        color=existing.get("color"),
+        glyph=existing.get("glyph"),
+    )
+    return {"ok": True}
 
 
 # ── Inferred knowledge dashboard (P1.5) ──────────────────────────────────────

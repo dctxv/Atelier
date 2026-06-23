@@ -1,261 +1,288 @@
-"""Strand registry — Prescient Memory Part 1, §0.2.
+"""Emergent memory strand registry.
 
-Strands are predicate/subject bundles that aggregate related memory atoms
-into named life-area timelines (career, places, relationships, projects,
-health, creative).  Stored in app_config key 'memory.strands' as a JSON
-array.  Membership is a view (atoms may belong to multiple strands).
-
-Visibility Law (restated per design mandate):
-  Nothing inferred enters chat context until user-confirmed or explicitly
-  tagged as inference at render time.  Strand metadata is never injected
-  into chat; it is a UI-only surface.
-
-The embedder is currently a lexical hashing fallback, not semantic.
-Clustering below uses conservative cosine thresholds and a hard cap to
-defend against nonsensical clusters; thresholds are app_config knobs.
+Strands are rebuildable labels over geometry-derived atom clusters. The
+registry is persistent so strand ids and labels stay stable across passes, but
+it owns no memory truth: atom text, confidence, provenance, and vectors remain
+in the memory tables. NULL memory_atom.strand_id is the honest noise/unassigned
+state surfaced to the UI as "Unsorted".
 """
 from __future__ import annotations
 
-import json
+import hashlib
+import re
+import uuid
 
-from . import config, db, memory
+import numpy as np
 
-_REGISTRY_KEY = "memory.strands"
+from . import db, embeddings, memory
 
-_STATIC_BUNDLES: list[dict] = [
-    {
-        "id": "career",
-        "name": "Career",
-        "kind": "static",
-        "predicates": ["employer", "job_title", "working_on"],
-        "subjects": [],
-    },
-    {
-        "id": "places",
-        "name": "Places",
-        "kind": "static",
-        "predicates": ["lives_in", "visited"],
-        "subjects": [],
-    },
-    {
-        "id": "relationships",
-        "name": "Relationships",
-        "kind": "static",
-        "predicates": ["partner"],
-        "subjects": [],
-    },
-    {
-        "id": "projects",
-        "name": "Projects",
-        "kind": "static",
-        "predicates": ["working_on", "building", "shipped"],
-        "subjects": [],
-    },
-    {
-        "id": "health",
-        "name": "Health",
-        "kind": "static",
-        "predicates": ["exercise", "sleep", "diet", "symptom", "injury"],
-        "subjects": [],
-    },
-    {
-        "id": "creative",
-        "name": "Creative",
-        "kind": "static",
-        "predicates": ["writing", "making", "composing", "hobby"],
-        "subjects": [],
-    },
-]
+_PALETTE = (
+    "#6E7E8A",  # slate
+    "#7C8A6E",  # sage
+    "#A8756B",  # clay
+    "#8A7A5A",  # brass
+    "#9A6B6B",  # muted rose-brown
+    "#7E6E8A",  # muted violet
+    "#6F867F",  # green-blue
+    "#8A7065",  # umber
+)
 
 
-async def load_registry() -> list[dict]:
-    raw = await config.get_setting(_REGISTRY_KEY)
-    if not raw:
-        return []
-    try:
-        return json.loads(raw)
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Strand registry JSON corrupted; falling back to static bundles"
-        )
-        return []
+def _vec_blob(vec: np.ndarray | list[float] | None) -> bytes | None:
+    if vec is None:
+        return None
+    arr = np.asarray(vec, dtype=np.float32)
+    if arr.shape[0] != db.EMBED_DIM:
+        return None
+    return arr.tobytes()
+
+
+def blob_to_vec(blob) -> np.ndarray | None:
+    if not blob:
+        return None
+    arr = np.frombuffer(bytes(blob), dtype=np.float32)
+    if arr.shape[0] != db.EMBED_DIM:
+        return None
+    return arr.astype(np.float32, copy=True)
+
+
+def _color_for_id(strand_id: str) -> str:
+    h = int(hashlib.sha256(strand_id.encode()).hexdigest()[:8], 16)
+    return _PALETTE[h % len(_PALETTE)]
+
+
+def stable_cluster_id(atom_ids: list[str]) -> str:
+    sig = "\n".join(sorted(atom_ids))
+    return "strand_" + hashlib.sha256(sig.encode()).hexdigest()[:16]
+
+
+def _shape(row: dict) -> dict:
+    label = row.get("label")
+    return {
+        "id": row["id"],
+        "label": label,
+        "name": label or "Unlabeled strand",
+        "kind": "emergent",
+        "atom_count": row.get("atom_count") or 0,
+        "status": row.get("status") or "active",
+        "merged_into": row.get("merged_into"),
+        "color": row.get("color") or _color_for_id(row["id"]),
+        "glyph": row.get("glyph"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+async def load_registry(include_dormant: bool = False) -> list[dict]:
+    where = "" if include_dormant else "WHERE status='active'"
+    rows = await db.fetchall(
+        f"SELECT * FROM memory_strands {where} ORDER BY atom_count DESC, label IS NULL, label, id"
+    )
+    return [_shape(r) for r in rows]
 
 
 async def save_registry(strands: list[dict]) -> None:
-    await config.set_setting(_REGISTRY_KEY, json.dumps(strands))
+    """Compatibility shim for old rename flows.
+
+    The legacy registry was a JSON blob. New callers should update rows
+    directly, but this preserves the old API by applying label/status edits for
+    rows that already exist.
+    """
+    ts = db.now()
+
+    def op(conn):
+        for s in strands or []:
+            sid = s.get("id")
+            if not sid:
+                continue
+            label = s.get("label", s.get("name"))
+            conn.execute(
+                "UPDATE memory_strands SET label=?, updated_at=? WHERE id=?",
+                (label, ts, sid),
+            )
+
+    await db.write(op)
 
 
 async def strand_bootstrap() -> None:
-    """Initialise static strand bundles if not already present. Idempotent."""
-    existing = await load_registry()
-    existing_ids = {s["id"] for s in existing}
-    added = False
-    for bundle in _STATIC_BUNDLES:
-        if bundle["id"] not in existing_ids:
-            existing.append({**bundle, "created_at": db.now()})
-            added = True
-    if added:
-        await save_registry(existing)
+    """No-op cold start.
+
+    The old static career/places/etc. taxonomy is intentionally not seeded into
+    the emergent registry.
+    """
+    return None
 
 
-async def add_strand(name: str, predicates: list[str]) -> dict:
-    """Add a user-created strand to the registry. Returns the new strand dict."""
-    import re
-    import uuid
-    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or str(uuid.uuid4())[:8]
-    registry = await load_registry()
-    # Ensure slug uniqueness
-    existing_ids = {s["id"] for s in registry}
-    sid = slug
-    n = 2
-    while sid in existing_ids:
-        sid = f"{slug}_{n}"
-        n += 1
-    strand = {
-        "id": sid,
-        "name": name,
-        "kind": "user",
-        "predicates": [p.lower() for p in predicates],
-        "subjects": [],
-        "created_at": db.now(),
-    }
-    registry.append(strand)
-    await save_registry(registry)
-    return strand
+async def add_strand(name: str, predicates: list[str] | None = None) -> dict:
+    """Create a user-named strand without predicate-bundle membership.
+
+    The predicates argument is accepted for compatibility with old
+    insight_offer resolution, but it no longer claims atoms.
+    """
+    label = (name or "").strip() or "Unlabeled strand"
+    slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "strand"
+    sid = f"user_{slug}"
+    existing_ids = {r["id"] for r in await load_registry(include_dormant=True)}
+    if sid in existing_ids:
+        sid = f"{sid}_{uuid.uuid4().hex[:8]}"
+    label_vec = np.asarray(await embeddings.embed(label), dtype=np.float32)
+    await upsert_strand(
+        sid,
+        label=label,
+        label_embedding=label_vec,
+        centroid=None,
+        atom_count=0,
+        status="active",
+    )
+    return (await get_strand(sid)) or {"id": sid, "name": label, "label": label}
 
 
-async def resolve_strands(atom: dict) -> list[str]:
-    """Return list of strand IDs that claim this atom (may be multiple)."""
-    pred = (atom.get("predicate") or "").lower().strip()
-    subj = (atom.get("subject") or "").lower().strip()
-    registry = await load_registry()
-    if not registry:
-        registry = [{**b, "created_at": db.now()} for b in _STATIC_BUNDLES]
+async def get_strand(strand_id: str) -> dict | None:
+    row = await db.fetchone("SELECT * FROM memory_strands WHERE id=?", (strand_id,))
+    return _shape(row) if row else None
 
-    strand_ids: list[str] = []
-    for strand in registry:
-        predicates = [p.lower() for p in strand.get("predicates", [])]
-        subjects = [s.lower() for s in strand.get("subjects", [])]
-        if (pred and pred in predicates) or (subj and subj in subjects):
-            strand_ids.append(strand["id"])
-    return strand_ids
+
+async def registry_vectors(include_dormant: bool = True) -> list[dict]:
+    where = "WHERE status IN ('active','dormant')" if include_dormant else "WHERE status='active'"
+    rows = await db.fetchall(
+        f"SELECT * FROM memory_strands {where} ORDER BY id"
+    )
+    out: list[dict] = []
+    for r in rows:
+        item = _shape(r)
+        item["centroid_vec"] = blob_to_vec(r.get("centroid"))
+        item["label_vec"] = blob_to_vec(r.get("label_embedding"))
+        out.append(item)
+    return out
+
+
+async def upsert_strand(
+    strand_id: str,
+    *,
+    label: str | None,
+    centroid: np.ndarray | list[float] | None,
+    atom_count: int,
+    status: str = "active",
+    label_embedding: np.ndarray | list[float] | None = None,
+    merged_into: str | None = None,
+    color: str | None = None,
+    glyph: str | None = None,
+) -> None:
+    ts = db.now()
+    await db.execute(
+        "INSERT INTO memory_strands("
+        "id, label, label_embedding, centroid, atom_count, status, merged_into, color, glyph, created_at, updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "label=COALESCE(excluded.label, memory_strands.label), "
+        "label_embedding=COALESCE(excluded.label_embedding, memory_strands.label_embedding), "
+        "centroid=COALESCE(excluded.centroid, memory_strands.centroid), "
+        "atom_count=excluded.atom_count, status=excluded.status, merged_into=excluded.merged_into, "
+        "color=COALESCE(excluded.color, memory_strands.color), "
+        "glyph=COALESCE(excluded.glyph, memory_strands.glyph), updated_at=excluded.updated_at",
+        (
+            strand_id,
+            label,
+            _vec_blob(label_embedding),
+            _vec_blob(centroid),
+            int(atom_count),
+            status,
+            merged_into,
+            color or _color_for_id(strand_id),
+            glyph,
+            ts,
+            ts,
+        ),
+    )
+
+
+async def apply_clustering_result(
+    strand_rows: list[dict],
+    assignments: dict[str, str | None],
+    clear_dirty_atom_ids: list[str],
+) -> None:
+    """Persist strand rows and single atom assignments in one writer pass."""
+    ts = db.now()
+
+    def op(conn):
+        for s in strand_rows:
+            sid = s["id"]
+            conn.execute(
+                "INSERT INTO memory_strands("
+                "id, label, label_embedding, centroid, atom_count, status, merged_into, color, glyph, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "label=COALESCE(excluded.label, memory_strands.label), "
+                "label_embedding=COALESCE(excluded.label_embedding, memory_strands.label_embedding), "
+                "centroid=COALESCE(excluded.centroid, memory_strands.centroid), "
+                "atom_count=excluded.atom_count, status=excluded.status, merged_into=excluded.merged_into, "
+                "color=COALESCE(excluded.color, memory_strands.color), "
+                "glyph=COALESCE(excluded.glyph, memory_strands.glyph), updated_at=excluded.updated_at",
+                (
+                    sid,
+                    s.get("label"),
+                    _vec_blob(s.get("label_embedding")),
+                    _vec_blob(s.get("centroid")),
+                    int(s.get("atom_count") or 0),
+                    s.get("status") or "active",
+                    s.get("merged_into"),
+                    s.get("color") or _color_for_id(sid),
+                    s.get("glyph"),
+                    ts,
+                    ts,
+                ),
+            )
+
+        for atom_id, strand_id in assignments.items():
+            conn.execute(
+                "UPDATE memory_atom SET strand_id=?, strand_assigned_at=?, cluster_dirty=0 WHERE id=?",
+                (strand_id, ts if strand_id else None, atom_id),
+            )
+
+        for atom_id in clear_dirty_atom_ids:
+            if atom_id in assignments:
+                continue
+            conn.execute(
+                "UPDATE memory_atom SET cluster_dirty=0 WHERE id=?",
+                (atom_id,),
+            )
+
+    await db.write(op)
 
 
 async def atoms_for_strand(
     strand_id: str,
     window: tuple[int, int] | None = None,
 ) -> list[dict]:
-    """Return all active atoms belonging to a strand, optionally within [from, to]."""
-    registry = await load_registry()
-    if not registry:
-        registry = [{**b, "created_at": db.now()} for b in _STATIC_BUNDLES]
-
-    strand = next((s for s in registry if s["id"] == strand_id), None)
-    if not strand:
-        return []
-
-    predicates = [p.lower() for p in strand.get("predicates", [])]
-    subjects = [s.lower() for s in strand.get("subjects", [])]
-
-    rows: list[dict] = []
-    seen_ids: set[str] = set()
-
-    if predicates:
-        placeholders = ",".join("?" * len(predicates))
+    if strand_id == "_unstranded":
         q = (
-            f"SELECT * FROM memory_atom WHERE predicate IN ({placeholders}) "
+            "SELECT * FROM memory_atom WHERE strand_id IS NULL "
+            "AND (status='active' OR status IS NULL) AND COALESCE(predicate,'') != 'suppressed'"
+        )
+        params: tuple = ()
+    else:
+        q = (
+            "SELECT * FROM memory_atom WHERE strand_id=? "
             "AND (status='active' OR status IS NULL)"
         )
-        params: tuple = tuple(predicates)
-        if window:
-            q += " AND COALESCE(valid_from, created_at) BETWEEN ? AND ?"
-            params = params + window
-        for r in await db.fetchall(q, params):
-            if r["id"] not in seen_ids:
-                rows.append(r)
-                seen_ids.add(r["id"])
-
-    if subjects:
-        placeholders = ",".join("?" * len(subjects))
-        q = (
-            f"SELECT * FROM memory_atom WHERE subject IN ({placeholders}) "
-            "AND (status='active' OR status IS NULL)"
-        )
-        params = tuple(subjects)
-        if window:
-            q += " AND COALESCE(valid_from, created_at) BETWEEN ? AND ?"
-            params = params + window
-        for r in await db.fetchall(q, params):
-            if r["id"] not in seen_ids:
-                rows.append(r)
-                seen_ids.add(r["id"])
-
+        params = (strand_id,)
+    if window:
+        q += " AND COALESCE(valid_from, created_at) BETWEEN ? AND ?"
+        params = params + window
+    q += " ORDER BY created_at DESC"
+    rows = await db.fetchall(q, params)
     return [memory._row_to_atom(r) for r in rows]
 
 
+async def resolve_strands(atom: dict) -> list[str]:
+    sid = atom.get("strand_id")
+    return [sid] if sid else []
+
+
 async def propose_strand_clusters() -> None:
-    """Quarterly: scan predicates outside existing strands.
+    """Legacy quarterly hook.
 
-    Because the embedder is lexical (word-overlap only), thresholds are
-    conservative and a hard cap of 2 open insight_offer questions prevents
-    spam.  Suppress if a per-cluster cooldown is active.
-
-    [VALIDATE] memory.strand_cluster_min (default 5) after real usage data.
+    The emergent clustering job replaces predicate proposal questions, so this
+    function intentionally does nothing.
     """
-    from . import questions as q_svc
-
-    min_predicates = int(await config.get_setting("memory.strand_cluster_min") or 5)
-
-    # Count open insight_offer questions — hard cap at 2
-    open_offers = await db.fetchall(
-        "SELECT id FROM memory_question WHERE kind='insight_offer' AND status='open'"
-    )
-    if len(open_offers) >= 2:
-        return
-
-    registry = await load_registry()
-    if not registry:
-        registry = [{**b, "created_at": db.now()} for b in _STATIC_BUNDLES]
-
-    known_predicates: set[str] = set()
-    for strand in registry:
-        known_predicates.update(p.lower() for p in strand.get("predicates", []))
-
-    # Find predicates with >= 3 atoms each that are outside existing strands
-    rows = await db.fetchall(
-        "SELECT predicate, COUNT(*) AS n FROM memory_atom "
-        "WHERE predicate IS NOT NULL AND (status='active' OR status IS NULL) "
-        "GROUP BY predicate HAVING n >= 3"
-    )
-    novel_preds = [r["predicate"] for r in rows
-                   if r["predicate"].lower() not in known_predicates]
-
-    if len(novel_preds) < min_predicates:
-        return
-
-    # Propose a grouping — suggest the user name it
-    prompt = (
-        f"You have {len(novel_preds)} memory predicates that don't fit existing "
-        f"life-area timelines: {', '.join(novel_preds[:20])}. "
-        "Consider grouping some of these into a new timeline."
-    )
-    # Signature for dedup / cooldown
-    sig = ",".join(sorted(novel_preds[:20]))
-    import hashlib
-    sig_hash = hashlib.md5(sig.encode()).hexdigest()[:12]
-
-    # Check 30-day cooldown for this signature
-    cooldown_key = f"strand_cluster_cooldown_{sig_hash}"
-    last = await config.get_setting(cooldown_key)
-    if last:
-        try:
-            if db.now() - int(last) < 30 * 86400:
-                return
-        except ValueError:
-            pass
-
-    # Store novel predicates in atom_ids (strings, not UUIDs) so resolve_question
-    # can populate the new strand's predicate list when accept_named fires.
-    await q_svc.open_question("insight_offer", novel_preds[:20], prompt)
-    await config.set_setting(cooldown_key, str(db.now()))
+    return None

@@ -64,6 +64,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(text);
 
+-- Rebuildable emergent strand layer. These rows label geometry-derived
+-- clusters; deleting this table must not delete or alter memory facts.
+CREATE TABLE IF NOT EXISTS memory_strands (
+    id              TEXT PRIMARY KEY,
+    label           TEXT,
+    label_embedding BLOB,
+    centroid        BLOB,
+    atom_count      INTEGER DEFAULT 0,
+    status          TEXT DEFAULT 'active', -- active | dormant | merged
+    merged_into     TEXT,
+    color           TEXT,
+    glyph           TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_strands_status ON memory_strands(status, atom_count);
+
 -- ── Research ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS research (
     id           TEXT PRIMARY KEY,

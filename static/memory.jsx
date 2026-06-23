@@ -1292,6 +1292,14 @@ const STRAND_COLORS = {
   creative:      '#7E6E8A',  // muted violet
   _unstranded:   '#9A8A78',  // taupe
 };
+
+function strandColor(s) {
+  return (s && s.color) || STRAND_COLORS[s && s.id] || STRAND_COLORS._unstranded;
+}
+
+function strandName(s) {
+  return (s && (s.name || s.label)) || 'Unlabeled strand';
+}
 const MODALITY_SHAPE = {
   factual:         'ellipse',
   opinion:         'diamond',
@@ -1321,7 +1329,7 @@ function ensureFcose() {
 function buildElements(data, selStrand, accent) {
   const strands = [
     ...data.strands,
-    { id:'_unstranded', name:'Misc', atoms: data.unstranded || [] },
+    { id:'_unstranded', name:'Unsorted', color: STRAND_COLORS._unstranded, atoms: data.unstranded || [] },
   ].filter(s => (s.atoms || []).length > 0);
 
   const els = [];
@@ -1329,8 +1337,8 @@ function buildElements(data, selStrand, accent) {
     strands.forEach(s => {
       const count = s.atoms.length;
       els.push({ data:{
-        id:'s_'+s.id, kind:'strand', sid:s.id, label:s.name,
-        color: STRAND_COLORS[s.id] || STRAND_COLORS._unstranded,
+        id:'s_'+s.id, kind:'strand', sid:s.id, label:strandName(s),
+        color: strandColor(s),
         size: 46 + Math.sqrt(count) * 14,
       }});
     });
@@ -1339,8 +1347,8 @@ function buildElements(data, selStrand, accent) {
 
   const s = strands.find(x => x.id === selStrand);
   if (!s) return els;
-  const color = STRAND_COLORS[s.id] || STRAND_COLORS._unstranded;
-  els.push({ data:{ id:'s_'+s.id, kind:'center', sid:s.id, label:s.name, color, size:44 }});
+  const color = strandColor(s);
+  els.push({ data:{ id:'s_'+s.id, kind:'center', sid:s.id, label:strandName(s), color, size:44 }});
   s.atoms.forEach(a => {
     const sal  = (a.salience == null ? 1 : a.salience);
     const conf = (a.confidence == null ? 1 : a.confidence);
@@ -1395,13 +1403,13 @@ function GraphTab() {
     if (!data) return [];
     const out = [];
     const seen = new Set();
-    const push = (a, sid, sname) => {
+    const push = (a, sid, sname, scolor) => {
       if (seen.has(a.id)) return;
       seen.add(a.id);
-      out.push({ atom:a, strandId:sid, strandName:sname });
+      out.push({ atom:a, strandId:sid, strandName:sname, strandColor:scolor });
     };
-    (data.strands || []).forEach(s => (s.atoms||[]).forEach(a => push(a, s.id, s.name)));
-    (data.unstranded || []).forEach(a => push(a, '_unstranded', 'Misc'));
+    (data.strands || []).forEach(s => (s.atoms||[]).forEach(a => push(a, s.id, strandName(s), strandColor(s))));
+    (data.unstranded || []).forEach(a => push(a, '_unstranded', 'Unsorted', STRAND_COLORS._unstranded));
     return out;
   })();
 
@@ -1504,7 +1512,7 @@ function GraphTab() {
     cy.add(buildElements(data, selectedStrand, accent));
     const layout = cy.layout({
       name: ensureFcose() ? 'fcose' : 'cose',
-      animate: true, animationDuration: 480, randomize: true,
+      animate: true, animationDuration: 480, randomize: false,
       fit: true, padding: 48, nodeRepulsion: 6500, idealEdgeLength: 90,
       numIter: 1000,
     });
@@ -1536,7 +1544,7 @@ function GraphTab() {
 
   const selStrandName = (() => {
     if (!selectedStrand || !data) return null;
-    if (selectedStrand === '_unstranded') return 'Misc';
+    if (selectedStrand === '_unstranded') return 'Unsorted';
     const s = (data.strands || []).find(x => x.id === selectedStrand);
     return s ? s.name : selectedStrand;
   })();
@@ -1703,7 +1711,7 @@ function GraphTab() {
                   <button key={entry.atom.id} onClick={() => teleport(entry)} style={{
                     display:'flex', alignItems:'center', gap:10, width:'100%', textAlign:'left',
                     padding:'10px 18px', borderBottom:'1px solid var(--rule)', cursor:'pointer' }}>
-                    <span style={{ color: STRAND_COLORS[entry.strandId] || STRAND_COLORS._unstranded,
+                    <span style={{ color: entry.strandColor || STRAND_COLORS[entry.strandId] || STRAND_COLORS._unstranded,
                       fontSize:10 }}>●</span>
                     <span style={{ flex:1, fontFamily:'var(--font-b)', fontSize:13, color:'var(--text)',
                       overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>

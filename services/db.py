@@ -38,6 +38,8 @@ _write_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db-writer")
 _read_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="db-reader")
 
 _local = threading.local()
+_connections: set[sqlite3.Connection] = set()
+_connections_lock = threading.Lock()
 
 
 def now() -> int:
@@ -56,7 +58,21 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
+    with _connections_lock:
+        _connections.add(conn)
     return conn
+
+
+def configure_for_tests(db_path: str | Path) -> None:
+    """Point this process at an isolated SQLite DB before first DB use.
+
+    Test scripts call this before init_db() so fixture data never touches the
+    live data/atelier.db file. Existing worker-thread connections are not
+    migrated; this is intentionally a pre-init test harness hook.
+    """
+    global DATA_DIR, DB_PATH
+    DB_PATH = Path(db_path)
+    DATA_DIR = DB_PATH.parent
 
 
 def _conn() -> sqlite3.Connection:
@@ -180,6 +196,10 @@ async def init_db():
             "ALTER TABLE memory_atom ADD COLUMN status            TEXT DEFAULT 'active'",
             "ALTER TABLE memory_atom ADD COLUMN superseded_by     TEXT",
             "ALTER TABLE memory_atom ADD COLUMN meta              TEXT",
+            # Emergent strand bookkeeping. NULL strand_id means noise/unassigned.
+            "ALTER TABLE memory_atom ADD COLUMN strand_id          TEXT",
+            "ALTER TABLE memory_atom ADD COLUMN strand_assigned_at INTEGER",
+            "ALTER TABLE memory_atom ADD COLUMN cluster_dirty      INTEGER DEFAULT 1",
             # Task source tracking for assistant commitments
             "ALTER TABLE task ADD COLUMN source_kind TEXT",
             "ALTER TABLE task ADD COLUMN source_id   TEXT",
@@ -200,6 +220,8 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_atom_subj_pred ON memory_atom(subject, predicate, status)",
             "CREATE INDEX IF NOT EXISTS idx_atom_status    ON memory_atom(status, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_atom_modality  ON memory_atom(modality, status)",
+            "CREATE INDEX IF NOT EXISTS idx_atom_strand    ON memory_atom(strand_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_atom_cluster_dirty ON memory_atom(cluster_dirty, status)",
             "CREATE INDEX IF NOT EXISTS idx_task_source    ON task(source_kind, source_id)",
         ]
         for stmt in _post_indexes:
@@ -214,4 +236,12 @@ async def init_db():
 
 def shutdown():
     _write_pool.shutdown(wait=True)
-    _read_pool.shutdown(wait=False)
+    _read_pool.shutdown(wait=True)
+    with _connections_lock:
+        conns = list(_connections)
+        _connections.clear()
+    for conn in conns:
+        try:
+            conn.close()
+        except Exception:
+            pass

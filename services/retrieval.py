@@ -174,6 +174,26 @@ async def _ensure_knn_cache() -> None:
         await _rebuild_knn_cache()
 
 
+async def memory_knn_snapshot(copy: bool = True) -> dict:
+    """Return an atomic snapshot of the active memory KNN cache.
+
+    Background workers use this to share the retrieval matrix without reaching
+    into module globals or rebuilding a second vector store. By default the
+    matrix is copied so long-running analysis cannot observe an in-place cache
+    replacement while it computes.
+    """
+    await _ensure_knn_cache()
+    async with _get_knn_lock():
+        mat = _knn_mat
+        if mat is None:
+            mat = np.empty((0, DIM), dtype=np.float32)
+        return {
+            "matrix": mat.copy() if copy else mat,
+            "ids": list(_knn_ids),
+            "version": tuple(_knn_version),
+        }
+
+
 async def _numpy_knn(serialized_vec: bytes, k: int,
                      project_id: str | None = None,
                      min_cos: float | None = None) -> list[str]:
