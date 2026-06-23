@@ -115,12 +115,15 @@ async def run():
             assert all(s["label"] is None for s in strand_rows), strand_rows
             print("  PASS: labeling fails closed without an explicit cheap model")
 
+            # --- Determinism: two full passes on unchanged input produce identical assignments ---
             second = await cluster_memory({"full": True})
             assert second["ok"], second
             rows2 = await db.fetchall("SELECT id, strand_id FROM memory_atom ORDER BY text")
             second_assignments = {r["id"]: r["strand_id"] for r in rows2}
-            assert first_assignments == second_assignments
-            print("  PASS: full clustering is deterministic on unchanged input")
+            assert first_assignments == second_assignments, (
+                f"Non-deterministic: {[k for k in first_assignments if first_assignments[k] != second_assignments.get(k)]}"
+            )
+            print("  PASS: full clustering is deterministic on unchanged input (byte-identical assignments)")
 
             atom_id = rows2[0]["id"]
             await memory.update_atom(atom_id, text="Clay routes coding questions to cheap local models for cost control")
@@ -130,6 +133,105 @@ async def run():
             clean_one = await db.fetchone("SELECT cluster_dirty FROM memory_atom WHERE id=?", (atom_id,))
             assert clean_one and clean_one["cluster_dirty"] == 0
             print("  PASS: vector-affecting updates re-enter the cadence pass")
+
+            # --- Stale strand_id cleanup: suppressed atoms lose their strand assignment ---
+            # Find an atom that currently has a strand_id and suppress it.
+            assigned_row = await db.fetchone(
+                "SELECT id, strand_id FROM memory_atom WHERE strand_id IS NOT NULL LIMIT 1"
+            )
+            assert assigned_row, "expected at least one assigned atom"
+            suppressed_id = assigned_row["id"]
+            old_strand_id = assigned_row["strand_id"]
+            # Suppress the atom (predicate='suppressed' is the active suppression marker).
+            await db.execute(
+                "UPDATE memory_atom SET predicate='suppressed', cluster_dirty=0 WHERE id=?",
+                (suppressed_id,),
+            )
+            # Verify it still has its old strand_id before we run the worker.
+            before = await db.fetchone("SELECT strand_id FROM memory_atom WHERE id=?", (suppressed_id,))
+            assert before and before["strand_id"] == old_strand_id
+            # A full pass must null it out.
+            await cluster_memory({"full": True})
+            after = await db.fetchone("SELECT strand_id FROM memory_atom WHERE id=?", (suppressed_id,))
+            assert after and after["strand_id"] is None, (
+                f"Expected NULL strand_id after suppression, got {after['strand_id']}"
+            )
+            print("  PASS: apply_clustering_result nulls strand_id for suppressed atoms")
+
+            # --- Pending pool: leftovers accumulate across incremental passes and crystallize ---
+            # Reset to a clean slate with a high min_cluster_size so individual
+            # incremental passes can't form new strands on their own.
+            await cluster_memory({"full": True})
+            await config.set_setting("cluster.min_cluster_size", 4)
+
+            # Add 2 similar atoms (same token set → high hash-embedding cosine).
+            # These will fail centroid matching (new semantic area) and become leftovers.
+            pool_texts_batch1 = [
+                "Clay prefers keyboard shortcuts for terminal navigation workflow",
+                "Clay uses keyboard bindings to speed up terminal workflow",
+            ]
+            pool_ids_batch1 = []
+            for text in pool_texts_batch1:
+                atom = await memory.add_atom(
+                    text,
+                    type_="fact",
+                    source_kind="fixture",
+                    subject="user",
+                    predicate="workflow_pref",
+                    predicate_category="multi_valued",
+                    modality="factual",
+                    confidence=0.9,
+                )
+                pool_ids_batch1.append(atom["id"])
+
+            inc1 = await cluster_memory({})
+            assert inc1["ok"], inc1
+            # Both atoms should be dirty-cleared even though they're in the pool.
+            for aid in pool_ids_batch1:
+                row = await db.fetchone("SELECT cluster_dirty FROM memory_atom WHERE id=?", (aid,))
+                assert row and row["cluster_dirty"] == 0, f"atom {aid} still dirty after inc1"
+
+            pool_raw = await config.get_setting("cluster.pending_pool")
+            import json as _json
+            pool_after_inc1 = _json.loads(pool_raw or "[]")
+            assert any(aid in pool_after_inc1 for aid in pool_ids_batch1), (
+                f"Expected pool to contain batch-1 atoms, got {pool_after_inc1}"
+            )
+            print("  PASS: incremental pass saves leftovers to pending pool")
+
+            # Add 2 more similar atoms.  Combined pool = 4 >= min_cluster_size → should cluster.
+            pool_texts_batch2 = [
+                "Clay remaps terminal keyboard shortcuts for navigation speed",
+                "Clay configures keyboard workflow shortcuts in the terminal",
+            ]
+            pool_ids_batch2 = []
+            for text in pool_texts_batch2:
+                atom = await memory.add_atom(
+                    text,
+                    type_="fact",
+                    source_kind="fixture",
+                    subject="user",
+                    predicate="workflow_pref",
+                    predicate_category="multi_valued",
+                    modality="factual",
+                    confidence=0.9,
+                )
+                pool_ids_batch2.append(atom["id"])
+
+            inc2 = await cluster_memory({})
+            assert inc2["ok"], inc2
+            # At least some of the pool atoms should now have a strand assigned.
+            all_pool_ids = pool_ids_batch1 + pool_ids_batch2
+            pool_assignments = await db.fetchall(
+                f"SELECT id, strand_id FROM memory_atom WHERE id IN ({','.join('?' * len(all_pool_ids))})",
+                tuple(all_pool_ids),
+            )
+            assigned_count = sum(1 for r in pool_assignments if r["strand_id"])
+            assert assigned_count >= 2, (
+                f"Expected pending pool atoms to crystallize into a strand, got {assigned_count}/4 assigned"
+            )
+            print("  PASS: pending pool crystallizes into a new strand once enough similar atoms accumulate")
+
         finally:
             db.shutdown()
 

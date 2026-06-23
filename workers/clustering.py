@@ -16,6 +16,7 @@ from services import config, db, embeddings, llm, retrieval, strands
 from . import jobs
 
 _VERSION_KEY = "cluster.last_knn_version"
+_PENDING_POOL_KEY = "cluster.pending_pool"
 
 
 async def _cfg(key: str, default):
@@ -46,6 +47,33 @@ def _clean_label(raw: str) -> str | None:
     if len(label) > 48:
         label = label[:48].rsplit(" ", 1)[0].strip() or label[:48].strip()
     return label
+
+
+async def _using_real_embeddings() -> bool:
+    """Return True when a configured real embedding model is active (not hash fallback).
+
+    The dedup gate (_best_label_match) is cosine-based. Under the local hash
+    fallback 'Career' and 'Work' produce near-orthogonal vectors, so the gate
+    silently no-ops and duplicates slip through. Only engage it when we know
+    the embedding space is semantically meaningful.
+    """
+    return bool(await config.get_setting("embedding_model"))
+
+
+async def _load_pending_pool(active_id_set: set[str]) -> list[str]:
+    """Load the cross-pass leftover pool, filtering out atoms no longer active."""
+    raw = await config.get_setting(_PENDING_POOL_KEY)
+    if not raw:
+        return []
+    try:
+        pool = json.loads(raw)
+    except Exception:
+        return []
+    return [aid for aid in pool if isinstance(aid, str) and aid in active_id_set]
+
+
+async def _save_pending_pool(pool: list[str]) -> None:
+    await config.set_setting(_PENDING_POOL_KEY, json.dumps(pool))
 
 
 async def _label_clusters(
@@ -166,6 +194,7 @@ async def _clusters_to_assignments(
     sample_size: int,
     drift_threshold: float,
     merge_threshold: float,
+    real_embeddings: bool = True,
 ) -> tuple[dict[str, str], dict[str, dict]]:
     id_to_index = {aid: i for i, aid in enumerate(ids)}
     existing_by_id = {s["id"]: s for s in existing}
@@ -188,8 +217,7 @@ async def _clusters_to_assignments(
             "centroid": centroid,
         })
 
-    needs_label = [item for item in cluster_items if await config.get_setting("cheap_model")]
-    labels = await _label_clusters(needs_label, id_to_text, matrix, ids, sample_size)
+    labels = await _label_clusters(cluster_items, id_to_text, matrix, ids, sample_size)
 
     used_centroid_matches: set[str] = set()
     assignments: dict[str, str] = {}
@@ -212,21 +240,25 @@ async def _clusters_to_assignments(
             candidate = labels.get(item["key"])
             if candidate:
                 candidate_vec = await _embed_label(candidate)
-                if candidate_vec is not None:
+                # Only run the synonym dedup gate when using a semantically
+                # meaningful embedding model. Under the local hash fallback,
+                # cosine("Career", "Work") ≈ 0, making the gate completely inert
+                # and producing silent duplicates instead of merges.
+                if candidate_vec is not None and real_embeddings:
                     merged = _best_label_match(candidate_vec, label_registry, merge_threshold)
-                    if merged:
-                        sid = merged
-                        existing_row = existing_by_id.get(sid, {})
-                        label = existing_row.get("label")
-                        label_vec = existing_row.get("label_vec")
-                    else:
-                        sid = item["key"]
-                        label = candidate
-                        label_vec = candidate_vec
-                        label_registry[sid] = candidate_vec
+                else:
+                    merged = None
+                if merged:
+                    sid = merged
+                    existing_row = existing_by_id.get(sid, {})
+                    label = existing_row.get("label")
+                    label_vec = existing_row.get("label_vec")
                 else:
                     sid = item["key"]
                     label = candidate
+                    label_vec = candidate_vec
+                    if candidate_vec is not None and real_embeddings:
+                        label_registry[sid] = candidate_vec
             else:
                 sid = item["key"]
 
@@ -259,6 +291,22 @@ async def _active_rows() -> list[dict]:
 
 async def _dirty_ids() -> list[str]:
     rows = await db.fetchall("SELECT id FROM memory_atom WHERE cluster_dirty=1 ORDER BY id")
+    return [r["id"] for r in rows]
+
+
+async def _stale_strand_ids() -> list[str]:
+    """Atoms that left the active set but still point to a strand.
+
+    These are suppressed or non-active-status atoms whose strand_id was never
+    cleared. They need to be nulled out so dormant strand atom_counts stay
+    accurate and Unsorted counts are correct.
+    """
+    rows = await db.fetchall(
+        "SELECT id FROM memory_atom "
+        "WHERE strand_id IS NOT NULL "
+        "AND (status NOT IN ('active') AND status IS NOT NULL "
+        "     OR COALESCE(predicate,'') = 'suppressed')"
+    )
     return [r["id"] for r in rows]
 
 
@@ -321,13 +369,18 @@ async def cluster_memory(payload: dict | None = None):
 
     force_full = bool(payload.get("full") or payload.get("backfill"))
     dirty_ids = await _dirty_ids()
-    snapshot = await retrieval.memory_knn_snapshot(copy=True)
-    version = tuple(snapshot["version"])
+
+    # Check version before the ~51 MB matrix copy to skip clean hourly runs cheaply.
+    snapshot_meta = await retrieval.memory_knn_snapshot(copy=False)
+    version = tuple(snapshot_meta["version"])
     last_version = await config.get_setting(_VERSION_KEY)
-    active_rows = await _active_rows()
 
     if not force_full and not dirty_ids and last_version == _version_json(version):
         return {"ok": True, "noop": "clean"}
+
+    snapshot = await retrieval.memory_knn_snapshot(copy=True)
+    active_rows = await _active_rows()
+    real_embeddings = await _using_real_embeddings()
 
     if not active_rows:
         await strands.apply_clustering_result([], {}, dirty_ids)
@@ -343,6 +396,7 @@ async def cluster_memory(payload: dict | None = None):
         return {"ok": True, "active_atoms": 0}
 
     active_indices = [snapshot_index[aid] for aid in active_ids]
+    active_index = {aid: i for i, aid in enumerate(active_ids)}
     matrix = matrix_all[active_indices]
     id_to_text = {r["id"]: r["text"] for r in active_rows}
     existing = await strands.registry_vectors(include_dormant=True)
@@ -375,20 +429,22 @@ async def cluster_memory(payload: dict | None = None):
             sample_size=sample_size,
             drift_threshold=drift_threshold,
             merge_threshold=merge_threshold,
+            real_embeddings=real_embeddings,
         )
         assignments.update(cluster_assignments)
         for i in noise:
             assignments[active_ids[i]] = None
+        # Full pass resets the pending pool — all atoms have been reconsidered.
+        await _save_pending_pool([])
     else:
-        dirty_active = [aid for aid in dirty_ids if aid in active_ids]
+        dirty_active = [aid for aid in dirty_ids if aid in active_index]
         existing_active = [
             s for s in existing
             if s.get("status") == "active" and s.get("centroid_vec") is not None
         ]
         leftovers: list[str] = []
         for aid in dirty_active:
-            idx = active_ids.index(aid)
-            vec = matrix[idx]
+            vec = matrix[active_index[aid]]
             candidates = []
             for s in existing_active:
                 sim = float(vec @ s["centroid_vec"])
@@ -399,19 +455,30 @@ async def cluster_memory(payload: dict | None = None):
             else:
                 leftovers.append(aid)
 
-        if len(leftovers) >= min_cluster_size:
-            leftover_indices = [active_ids.index(aid) for aid in leftovers]
-            local_matrix = matrix[leftover_indices]
+        # Carry-over pending pool: accumulate leftovers across passes so that
+        # new strands can crystallize even when fewer than min_cluster_size
+        # similar atoms arrive in a single hourly window.
+        active_id_set = set(active_ids)
+        pending_pool = await _load_pending_pool(active_id_set)
+        # Atoms being re-processed this pass leave the stable pool; they'll
+        # re-join as leftovers below if they still don't match anything.
+        dirty_set = set(dirty_active)
+        pool_stable = [aid for aid in pending_pool if aid not in dirty_set]
+        combined = list(dict.fromkeys(pool_stable + leftovers))
+
+        if len(combined) >= min_cluster_size:
+            combined_indices = [active_index[aid] for aid in combined]
+            local_matrix = matrix[combined_indices]
             local_clusters, local_noise = cluster_core.communities(
                 local_matrix,
-                leftovers,
+                combined,
                 k=knn_k,
                 sim_threshold=sim_threshold,
                 min_cluster_size=min_cluster_size,
                 block_size=block_size,
                 max_iter=max_iter,
             )
-            cluster_member_ids = [[leftovers[i] for i in members] for members in local_clusters]
+            cluster_member_ids = [[combined[i] for i in members] for members in local_clusters]
             cluster_assignments, target_info = await _clusters_to_assignments(
                 cluster_member_ids,
                 matrix,
@@ -421,13 +488,27 @@ async def cluster_memory(payload: dict | None = None):
                 sample_size=sample_size,
                 drift_threshold=drift_threshold,
                 merge_threshold=merge_threshold,
+                real_embeddings=real_embeddings,
             )
             assignments.update(cluster_assignments)
+            # Noise atoms from pool clustering stay unassigned; persist them
+            # for the next pass so they can accumulate further.
+            noise_pool = [combined[i] for i in local_noise]
+            await _save_pending_pool(noise_pool)
             for i in local_noise:
-                assignments[leftovers[i]] = None
+                assignments[combined[i]] = None
         else:
+            # Not enough to attempt clustering; keep the pool warm.
+            await _save_pending_pool(combined)
             for aid in leftovers:
                 assignments[aid] = None
+
+    # Null out stale strand assignments for atoms that left the active set
+    # (suppressed or non-active status). Without this, Unsorted counts are
+    # understated and dormant strand atom_counts are inflated.
+    stale_ids = await _stale_strand_ids()
+    for aid in stale_ids:
+        assignments[aid] = None
 
     if _elapsed_ms(started) > max_runtime_ms:
         return {"ok": False, "skipped": "max_runtime_before_write"}
@@ -442,7 +523,7 @@ async def cluster_memory(payload: dict | None = None):
     strand_rows = _strand_rows_from_members(current_members, matrix, active_ids, target_info, existing)
     await strands.apply_clustering_result(strand_rows, assignments, dirty_ids)
     await config.set_setting(_VERSION_KEY, _version_json(version))
-    return {
+    result = {
         "ok": True,
         "full": full_pass,
         "active_atoms": len(active_ids),
@@ -451,12 +532,22 @@ async def cluster_memory(payload: dict | None = None):
         "strands": len([s for s in strand_rows if s.get("status") == "active"]),
         "duration_ms": round(_elapsed_ms(started), 2),
     }
+    if not real_embeddings:
+        result["labels_unreliable"] = True
+    return result
 
 
 def register_schedule():
-    """Register the cadence-only clustering pass."""
+    """Register hourly incremental pass and weekly full rebuild."""
     jobs.add_periodic(
         lambda: jobs.enqueue("cluster_memory"),
         seconds=3600,
         job_id="cluster_memory",
+    )
+    # Weekly full rebuild thaws the taxonomy: splits overgrown strands,
+    # re-merges drifted ones, and re-evaluates all pending pool atoms.
+    jobs.add_periodic(
+        lambda: jobs.enqueue("cluster_memory", {"full": True}),
+        seconds=604800,
+        job_id="cluster_memory_full",
     )
