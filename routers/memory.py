@@ -382,16 +382,20 @@ async def get_strands():
 
 
 def _graph_atom(a: dict) -> dict:
-    """Trimmed atom shape for the constellation graph (visual grammar fields)."""
+    """Atom shape for Garden beds and Constellation map."""
     return {
         "id":         a["id"],
         "text":       a["text"],
         "subject":    a.get("subject"),
         "predicate":  a.get("predicate"),
+        "object":     a.get("object"),
         "modality":   a.get("modality"),
         "confidence": a.get("confidence"),
         "salience":   a.get("salience"),
         "pinned":     bool(a.get("pinned")),
+        "status":     a.get("status") or "active",
+        "valid_from": a.get("valid_from"),
+        "valid_until": a.get("valid_until"),
         "created_at": a.get("created_at"),
     }
 

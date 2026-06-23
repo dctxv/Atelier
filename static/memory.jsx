@@ -2,22 +2,22 @@
 /* Design language: parchment palette, Cormorant italic display,
    Lora prose, IBM Plex Mono 9px/.14em uppercase labels, 1px warm borders,
    no shadows, 10-12px radii, 160ms ease transitions, fadeUp entry.       */
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
 // ── Tier config ────────────────────────────────────────────────────────────
 const TIER_ORDER = { essential: 0, living: 1, prescient: 2 };
 
 const TIER_TABS = {
   essential:  ['fragments'],
-  living:     ['overview', 'fragments', 'graph', 'review', 'goals', 'timelines'],
-  prescient:  ['overview', 'fragments', 'graph', 'review', 'goals', 'timelines', 'inferred'],
+  living:     ['overview', 'fragments', 'review', 'goals', 'timelines'],
+  prescient:  ['overview', 'fragments', 'review', 'goals', 'timelines', 'inferred'],
 };
 const TAB_LABELS = {
-  overview: 'Overview', fragments: 'Memory', graph: 'Graph', review: 'Review',
+  overview: 'Overview', fragments: 'Garden', review: 'Review',
   goals: 'Goals', timelines: 'Timelines', inferred: 'Inferred',
 };
 const TAB_MIN_TIER = {
-  overview: 'living', fragments: 'essential', graph: 'living', review: 'living',
+  overview: 'living', fragments: 'essential', review: 'living',
   goals: 'living', timelines: 'living', inferred: 'prescient',
 };
 
@@ -113,170 +113,404 @@ function Toggle({ on, onToggle }) {
   );
 }
 
-// ── Fragments tab ───────────────────────────────────────────────────────────
-function FragmentsTab({ memories }) {
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
-  const [includeFaded, setIncludeFaded] = useState(false);
+// ── Garden view ───────────────────────────────────────────────────────────────
+const MODALITY_GLYPH = {
+  factual:         '●',
+  opinion:         '◈',
+  desire:          '◇',
+  plan:            '▷',
+  self_perception: '◉',
+  hypothetical:    '⬡',
+  commitment:      '◼',
+  hypothesis:      '⬡',
+  insight:         '◎',
+};
 
-  const CATEGORIES = ['all','functional','multi_valued','comparative','experiential','attribute'];
+function decayOpacity(createdAt) {
+  if (!createdAt) return 1;
+  const ageDays = (Date.now() / 1000 - createdAt) / 86400;
+  if (ageDays < 7) return 1;
+  if (ageDays > 180) return 0.45;
+  return 1 - (ageDays - 7) / (180 - 7) * 0.55;
+}
 
-  const filtered = memories.filter(m => {
-    if (!includeFaded && m.confidence !== null && m.confidence !== undefined && m.confidence < 0.4)
-      return false;
-    if (filter !== 'all' && m.predicate_category !== filter) return false;
-    if (query) {
-      const q = query.toLowerCase();
-      if (!(m.text||'').toLowerCase().includes(q) &&
-          !(m.subject||'').toLowerCase().includes(q) &&
-          !(m.predicate||'').toLowerCase().includes(q)) return false;
-    }
-    return true;
-  });
-
-  // Group by subject
-  const bySubject = {};
-  filtered.forEach(m => {
-    const s = m.subject || '_legacy';
-    if (!bySubject[s]) bySubject[s] = [];
-    bySubject[s].push(m);
-  });
-
-  const pinnedCount = memories.filter(m => m.pinned).length;
-  const fadedCount = memories.filter(m =>
-    m.confidence !== null && m.confidence !== undefined && m.confidence < 0.4).length;
+function GardenAtomRow({ atom, onClick, selected }) {
+  const glyph = MODALITY_GLYPH[atom.modality] || '●';
+  const modColor = MODALITY_COLORS[atom.modality] || 'var(--bar)';
+  const opacity = decayOpacity(atom.created_at);
+  const isInferred = atom.modality === 'insight' || atom.modality === 'hypothesis';
+  const isProposed = atom.status === 'proposed';
 
   return (
-    <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column' }}>
-      {/* Header strip */}
-      <div style={{ padding:'12px 40px 0', borderBottom:'1px solid var(--border)',
-        background:'var(--nav-bg)', flexShrink:0 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:12 }}>
-          {monoLabel(`${memories.length} fragments`, 'var(--text-3)')}
-          <span style={{ color:'var(--border-2)' }}>·</span>
-          {monoLabel(`${pinnedCount} pinned`, 'var(--text-3)')}
-          {fadedCount > 0 && <>
-            <span style={{ color:'var(--border-2)' }}>·</span>
-            {monoLabel(`${fadedCount} faded`, 'var(--text-3)')}
-          </>}
-          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8,
-            padding:'3px 10px', border:'1px solid var(--border-2)', borderRadius:8,
-            background:'var(--thread-bg)' }}>
-            <Ico n="search" size={12} color="var(--text-3)"/>
-            <input value={query} onChange={e=>setQuery(e.target.value)}
-              placeholder="Search…"
-              style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text)', width:120 }}/>
-          </div>
+    <div onClick={() => onClick(atom)} style={{
+      display: 'flex', gap: 10, padding: '9px 0',
+      borderBottom: '1px solid var(--rule)', cursor: 'pointer', opacity,
+      background: selected ? 'var(--accent-bg)' : 'transparent',
+      transition: 'background var(--t)',
+    }}>
+      <span style={{ fontFamily: 'var(--font-m)', fontSize: 11, color: modColor,
+        flexShrink: 0, lineHeight: 1.65, paddingTop: 1 }}>{glyph}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontFamily: 'var(--font-b)', fontSize: 13.5, lineHeight: 1.65,
+          color: 'var(--text)', margin: 0 }}>
+          {atom.text}
+          {isProposed && (
+            <span style={{ fontFamily: 'var(--font-m)', fontSize: 9,
+              color: 'var(--accent)', marginLeft: 8 }}>(proposed)</span>
+          )}
+          {isInferred && !isProposed && (
+            <span style={{ fontFamily: 'var(--font-m)', fontSize: 9,
+              color: MODALITY_COLORS.insight, marginLeft: 8, opacity: 0.7 }}>(inferred)</span>
+          )}
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
+          marginTop: 3 }}>
+          {monoLabel(relTime(atom.created_at))}
+          {atom.predicate && (
+            <span style={{ fontFamily: 'var(--font-m)', fontSize: 9, color: 'var(--text-3)',
+              padding: '1px 5px', border: '1px solid var(--border)', borderRadius: 3 }}>
+              {atom.predicate}
+            </span>
+          )}
+          {atom.confidence != null && atom.confidence < 0.7 && (
+            <span style={{ fontFamily: 'var(--font-m)', fontSize: 9, color: 'var(--text-3)' }}>
+              {Math.round(atom.confidence * 100)}%
+            </span>
+          )}
+          {atom.pinned && <span style={{ color: 'var(--accent)', fontSize: 10 }}>📌</span>}
         </div>
-        {/* Filter pills */}
-        <div style={{ display:'flex', gap:6, alignItems:'center', paddingBottom:10 }}>
-          {CATEGORIES.map(c => (
-            <button key={c} onClick={() => setFilter(c)} style={{
-              fontFamily:'var(--font-m)', fontSize:10,
-              color: filter===c ? 'var(--accent)' : 'var(--text-3)',
-              fontWeight: filter===c ? 600 : 400,
-              cursor:'pointer', padding:'2px 8px',
-              border: filter===c ? '1px solid var(--accent-bd)' : '1px solid transparent',
-              borderRadius:4, background: filter===c ? 'var(--accent-bg)' : 'transparent',
-            }}>{c}</button>
-          ))}
-          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
-            {monoLabel('faded', 'var(--text-3)')}
-            <Toggle on={includeFaded} onToggle={() => setIncludeFaded(v => !v)}/>
-          </div>
-        </div>
-      </div>
-
-      <div className="scroll" style={{ flex:1, background:'var(--thread-bg)', padding:'24px 40px' }}>
-        {filtered.length === 0 && (
-          <p style={{ fontFamily:'var(--font-m)', fontSize:12, color:'var(--text-3)', fontStyle:'italic' }}>
-            {memories.length === 0 ? 'No memories yet — they build up as you chat.' : 'No matches.'}
-          </p>
-        )}
-
-        {Object.entries(bySubject).map(([subj, atoms]) => (
-          <SubjectBed key={subj} subject={subj} atoms={atoms}/>
-        ))}
       </div>
     </div>
   );
 }
 
-function SubjectBed({ subject, atoms }) {
-  const [expanded, setExpanded] = useState(false);
-  const PREVIEW = 6;
-  const shown = expanded ? atoms : atoms.slice(0, PREVIEW);
-
-  const subjectLabel = subject === '_legacy' ? 'Other' : subject.toUpperCase();
+function StrandBed({ strand, atoms, selectedId, onAtomClick }) {
+  const [open, setOpen] = useState(true);
+  const color = strand.color || '#9A8A78';
+  const name = strand.label || strand.name || 'Unlabeled';
 
   return (
-    <div style={{ marginBottom:24 }}>
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, cursor:'pointer' }}
-           onClick={() => setExpanded(e => !e)}>
-        <div style={{ width:1.5, height:16, background:'var(--bar)', borderRadius:1 }}/>
-        {monoLabel(subjectLabel)}
-        <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)', marginLeft:'auto' }}>
-          {atoms.length}
-        </span>
-        <span style={{ color:'var(--text-3)', fontSize:10 }}>{expanded ? '▴' : '▾'}</span>
+    <div style={{ marginBottom: 28 }}>
+      <div onClick={() => setOpen(o => !o)} style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
+        cursor: 'pointer', borderBottom: '1px solid var(--border)',
+      }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color,
+          flexShrink: 0, display: 'inline-block' }}/>
+        <span style={{ fontFamily: 'var(--font-b)', fontSize: 13, fontStyle: 'italic',
+          color: 'var(--text-2)', flex: 1 }}>{name}</span>
+        <span style={{ fontFamily: 'var(--font-m)', fontSize: 9,
+          color: 'var(--text-3)' }}>{atoms.length}</span>
+        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{open ? '▴' : '▾'}</span>
+      </div>
+      {open && atoms.map(a => (
+        <GardenAtomRow key={a.id} atom={a}
+          onClick={onAtomClick} selected={selectedId === a.id}/>
+      ))}
+    </div>
+  );
+}
+
+function AtomDetailPanel({ atom, onClose, onUpdate }) {
+  const [events, setEvents] = useState([]);
+  const [eventsLoaded, setEventsLoaded] = useState(false);
+  const [confirming, setConfirming] = useState(null);
+
+  useEffect(() => {
+    if (!atom) return;
+    setEventsLoaded(false);
+    setEvents([]);
+    fetch(`/api/memory/${atom.id}/events`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setEvents(d.events || []); setEventsLoaded(true); })
+      .catch(() => setEventsLoaded(true));
+  }, [atom ? atom.id : null]);
+
+  async function togglePin() {
+    await fetch(`/api/memory/${atom.id}/pin`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: !atom.pinned }),
+    });
+    if (onUpdate) onUpdate();
+  }
+
+  async function retract() {
+    await fetch(`/api/memory/${atom.id}/retract`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'user' }),
+    });
+    setConfirming(null);
+    if (onUpdate) onUpdate();
+    onClose();
+  }
+
+  async function forget() {
+    await fetch(`/api/memory/${atom.id}/forget`, { method: 'POST' });
+    setConfirming(null);
+    if (onUpdate) onUpdate();
+    onClose();
+  }
+
+  if (!atom) return null;
+
+  const isProposed = atom.status === 'proposed';
+  const isInferred = atom.modality === 'insight' || atom.modality === 'hypothesis';
+  const fields = [
+    ['subject',    atom.subject],
+    ['predicate',  atom.predicate],
+    ['object',     atom.object],
+    ['modality',   atom.modality],
+    ['status',     atom.status],
+    ['confidence', atom.confidence != null ? `${Math.round(atom.confidence * 100)}%` : null],
+    ['added',      relTime(atom.created_at)],
+    ['valid from', atom.valid_from ? fmtDate(atom.valid_from) : null],
+    ['expires',    atom.valid_until ? fmtDate(atom.valid_until) : null],
+  ].filter(([, v]) => v);
+
+  return (
+    <div className="fade-up" style={{ width: 320, flexShrink: 0,
+      borderLeft: '1px solid var(--border)', background: 'var(--nav-bg)',
+      overflowY: 'auto', padding: '20px 22px', display: 'flex',
+      flexDirection: 'column', gap: 16 }}>
+
+      <div style={{ display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between' }}>
+        {monoLabel('Atom')}
+        <button onClick={onClose} style={{ cursor: 'pointer' }}>
+          <Ico n="close" size={14} color="var(--text-3)"/>
+        </button>
       </div>
 
-      {shown.map((m, i) => (
-        <AtomRow key={m.id||i} atom={m}/>
-      ))}
+      <div>
+        {isProposed && (
+          <div style={{ marginBottom: 8 }}>
+            <MonoBadge color="var(--accent)">proposed — not in context</MonoBadge>
+          </div>
+        )}
+        {isInferred && !isProposed && (
+          <div style={{ marginBottom: 8 }}>
+            <MonoBadge color={MODALITY_COLORS.insight}>(inferred)</MonoBadge>
+          </div>
+        )}
+        <p style={{ fontFamily: 'var(--font-b)', fontSize: 14.5, lineHeight: 1.7,
+          color: 'var(--text)' }}>{atom.text}</p>
+      </div>
 
-      {!expanded && atoms.length > PREVIEW && (
-        <button onClick={() => setExpanded(true)} style={{
-          fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)', cursor:'pointer',
-          padding:'4px 0', marginTop:4,
-        }}>▸ show all {atoms.length}</button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+        {fields.map(([label, value]) => (
+          <div key={label} style={{ display: 'flex', justifyContent: 'space-between',
+            alignItems: 'baseline', gap: 8 }}>
+            {monoLabel(label)}
+            <span style={{ fontFamily: 'var(--font-m)', fontSize: 10.5,
+              color: 'var(--text-2)', textAlign: 'right', flex: 1 }}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <GhostBtn onClick={togglePin}>{atom.pinned ? 'Unpin' : 'Pin'}</GhostBtn>
+        {confirming === 'retract' ? (
+          <>
+            <GhostBtn onClick={retract}
+              style={{ color: 'oklch(52% .15 25)', borderColor: 'oklch(70% .10 25)' }}>
+              Confirm retract
+            </GhostBtn>
+            <GhostBtn onClick={() => setConfirming(null)}>Cancel</GhostBtn>
+          </>
+        ) : confirming === 'forget' ? (
+          <>
+            <GhostBtn onClick={forget}
+              style={{ color: 'oklch(52% .15 25)', borderColor: 'oklch(70% .10 25)' }}>
+              Confirm forget
+            </GhostBtn>
+            <GhostBtn onClick={() => setConfirming(null)}>Cancel</GhostBtn>
+          </>
+        ) : (
+          <>
+            <GhostBtn onClick={() => setConfirming('retract')}>Retract</GhostBtn>
+            <GhostBtn onClick={() => setConfirming('forget')}
+              style={{ color: 'oklch(52% .15 25)', borderColor: 'oklch(70% .10 25)' }}>
+              Forget
+            </GhostBtn>
+          </>
+        )}
+      </div>
+
+      {eventsLoaded && events.length > 0 && (
+        <div>
+          {monoLabel('audit trail', undefined, { display: 'block', marginBottom: 8 })}
+          {events.map((e, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
+              padding: '4px 0', borderBottom: '1px solid var(--rule)' }}>
+              <span style={{ fontFamily: 'var(--font-m)', fontSize: 9.5,
+                color: 'var(--text-2)' }}>{e.kind}</span>
+              <span style={{ fontFamily: 'var(--font-m)', fontSize: 9,
+                color: 'var(--text-3)' }}>{relTime(e.created_at)}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function AtomRow({ atom: m }) {
-  const faded = (m.confidence !== null && m.confidence !== undefined && m.confidence < 0.4);
-  const col = MODALITY_COLORS[m.modality] || 'var(--bar)';
-  const isInferred = m.modality === 'insight';
+function GardenTab() {
+  const [view, setView] = useState('garden');
+  const [graphData, setGraphData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [modFilter, setModFilter] = useState('all');
+  const [selectedAtom, setSelectedAtom] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch('/api/memory/graph')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setGraphData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function handleUpdate() { load(); setSelectedAtom(null); }
+
+  if (loading) return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center',
+      justifyContent: 'center' }}>
+      <Pulse size={8}/>
+    </div>
+  );
+  if (!graphData) return null;
+
+  const allStrands = [
+    ...(graphData.strands || []).filter(s => s.id !== '_unstranded'),
+    {
+      id: '_unstranded', name: 'Unsorted', label: 'Unsorted',
+      color: '#9A8A78', atoms: graphData.unstranded || [],
+    },
+  ].filter(s => (s.atoms || []).length > 0);
+
+  const MODALITIES = ['all', 'factual', 'opinion', 'desire', 'plan', 'insight', 'hypothesis'];
+
+  function filterAtoms(atoms) {
+    return atoms.filter(a => {
+      if (modFilter !== 'all' && a.modality !== modFilter) return false;
+      if (query) {
+        const q = query.toLowerCase();
+        return (a.text || '').toLowerCase().includes(q) ||
+               (a.predicate || '').toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }
+
+  const allAtoms = allStrands.flatMap(s => s.atoms || []);
+  const pinnedFiltered = allAtoms.filter(a => a.pinned && filterAtoms([a]).length > 0);
 
   return (
-    <div style={{
-      display:'flex', gap:12, padding:'8px 0',
-      borderBottom:'1px solid var(--rule)',
-      opacity: faded ? 0.5 : 1,
-    }}>
-      <div style={{ width:1.5, background:col, borderRadius:1, flexShrink:0, alignSelf:'stretch' }}/>
-      <div style={{ flex:1, minWidth:0 }}>
-        <p style={{ fontFamily:'var(--font-b)', fontSize:14, lineHeight:1.65,
-          color:'var(--text)', marginBottom:4 }}>
-          {m.text}
-          {isInferred && <span style={{ fontFamily:'var(--font-m)', fontSize:9,
-            color:'var(--accent)', marginLeft:8, opacity:.7 }}>(inferred)</span>}
-        </p>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-          {monoLabel(relTime(m.timestamp))}
-          {m.predicate && (
-            <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
-              padding:'1px 5px', border:'1px solid var(--border)', borderRadius:3 }}>
-              {m.predicate}
-            </span>
-          )}
-          {m.modality && m.modality !== 'factual' && (
-            <span style={{ fontFamily:'var(--font-m)', fontSize:9,
-              color: MODALITY_COLORS[m.modality] || 'var(--text-3)',
-              padding:'1px 5px', border:`1px solid ${MODALITY_COLORS[m.modality] || 'var(--border)'}`,
-              borderRadius:3 }}>
-              {m.modality}
-            </span>
-          )}
-          {m.confidence !== null && m.confidence !== undefined && m.confidence < 0.7 && (
-            <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)' }}>
-              {Math.round(m.confidence * 100)}%
-            </span>
-          )}
-          {m.pinned && <span style={{ color:'var(--accent)', fontSize:11 }}>📌</span>}
+    <div style={{ flex: 1, overflow: 'hidden', display: 'flex',
+      flexDirection: 'column' }}>
+
+      {/* Sticky control bar */}
+      <div style={{ padding: '10px 40px', borderBottom: '1px solid var(--border)',
+        background: 'var(--nav-bg)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+            padding: '4px 12px', border: '1px solid var(--border-2)', borderRadius: 8,
+            background: 'var(--thread-bg)', flex: 1, maxWidth: 360 }}>
+            <Ico n="search" size={12} color="var(--text-3)"/>
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Search memories…"
+              style={{ fontFamily: 'var(--font-m)', fontSize: 11,
+                color: 'var(--text)', flex: 1 }}/>
+          </div>
+          {monoLabel(`${allAtoms.length}`, 'var(--text-3)')}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center',
+            gap: 0, borderRadius: 8, border: '1px solid var(--border-2)',
+            overflow: 'hidden', background: 'var(--thread-bg)' }}>
+            {[['garden', '⊞ Garden'], ['constellation', '◈ Map']].map(([v, lbl]) => (
+              <button key={v} onClick={() => setView(v)} style={{
+                padding: '5px 14px', cursor: 'pointer',
+                fontFamily: 'var(--font-m)', fontSize: 10, letterSpacing: '.06em',
+                background: view === v ? 'var(--accent-bg)' : 'transparent',
+                color: view === v ? 'var(--accent)' : 'var(--text-3)',
+                borderRight: v === 'garden' ? '1px solid var(--border-2)' : 'none',
+              }}>{lbl}</button>
+            ))}
+          </div>
         </div>
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          {MODALITIES.map(m => (
+            <button key={m} onClick={() => setModFilter(m)} style={{
+              fontFamily: 'var(--font-m)', fontSize: 9.5, letterSpacing: '.06em',
+              textTransform: 'uppercase', cursor: 'pointer',
+              padding: '2px 8px', borderRadius: 4,
+              border: modFilter === m ? '1px solid var(--accent-bd)' : '1px solid transparent',
+              background: modFilter === m ? 'var(--accent-bg)' : 'transparent',
+              color: modFilter === m ? 'var(--accent)' : 'var(--text-3)',
+            }}>{m}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main area */}
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+        {view === 'garden' ? (
+          <div className="scroll" style={{ flex: 1, background: 'var(--thread-bg)',
+            padding: '24px 40px' }}>
+
+            {pinnedFiltered.length > 0 && (
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '4px 0', borderBottom: '1px solid var(--border)',
+                  marginBottom: 2 }}>
+                  {monoLabel('pinned', 'var(--accent)')}
+                </div>
+                {pinnedFiltered.map(a => (
+                  <GardenAtomRow key={a.id} atom={a}
+                    onClick={setSelectedAtom}
+                    selected={selectedAtom ? selectedAtom.id === a.id : false}/>
+                ))}
+              </div>
+            )}
+
+            {allStrands.map(s => {
+              const filtered = filterAtoms(s.atoms || []);
+              if (!filtered.length) return null;
+              return (
+                <StrandBed key={s.id} strand={s} atoms={filtered}
+                  selectedId={selectedAtom ? selectedAtom.id : null}
+                  onAtomClick={setSelectedAtom}/>
+              );
+            })}
+
+            {allAtoms.length === 0 && (
+              <p style={{ fontFamily: 'var(--font-m)', fontSize: 12,
+                color: 'var(--text-3)', fontStyle: 'italic' }}>
+                No memories yet — they build up as you chat.
+              </p>
+            )}
+            {allAtoms.length > 0 &&
+              allStrands.every(s => filterAtoms(s.atoms || []).length === 0) && (
+              <p style={{ fontFamily: 'var(--font-m)', fontSize: 12,
+                color: 'var(--text-3)', fontStyle: 'italic' }}>
+                No matches.
+              </p>
+            )}
+          </div>
+        ) : (
+          <ConstellationView
+            strands={allStrands}
+            selectedId={selectedAtom ? selectedAtom.id : null}
+            onAtomClick={setSelectedAtom}/>
+        )}
+
+        {selectedAtom && (
+          <AtomDetailPanel
+            atom={selectedAtom}
+            onClose={() => setSelectedAtom(null)}
+            onUpdate={handleUpdate}/>
+        )}
       </div>
     </div>
   );
@@ -1277,456 +1511,146 @@ function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
   );
 }
 
-// ── Graph tab — "Constellation Map" ──────────────────────────────────────────
-/* Palette-correct strand colours: desaturated earth tones that sit with the
-   parchment / mono palettes rather than the saturated primaries of the original
-   proposal. Node SHAPE encodes the real modality enum; SIZE encodes salience;
-   border/opacity encode confidence. fcose runs once per view — no continuous
-   physics. */
-const STRAND_COLORS = {
-  career:        '#6E7E8A',  // slate
-  places:        '#7C8A6E',  // sage
-  relationships: '#A8756B',  // clay
-  projects:      '#8A7A5A',  // brass
-  health:        '#9A6B6B',  // muted rose-brown
-  creative:      '#7E6E8A',  // muted violet
-  _unstranded:   '#9A8A78',  // taupe
+// ── Constellation view (hand-rolled SVG, no physics) ─────────────────────────
+const GLYPH_MAP = {
+  factual:         '●',
+  opinion:         '◈',
+  desire:          '◇',
+  plan:            '▷',
+  self_perception: '◉',
+  hypothetical:    '⬡',
+  commitment:      '◼',
+  hypothesis:      '⬡',
+  insight:         '◎',
 };
 
-function strandColor(s) {
-  return (s && s.color) || STRAND_COLORS[s && s.id] || STRAND_COLORS._unstranded;
-}
+function ConstellationView({ strands, selectedId, onAtomClick }) {
+  const containerRef = useRef(null);
+  const [size, setSize] = useState({ w: 800, h: 600 });
+  const [hovered, setHovered] = useState(null);
 
-function strandName(s) {
-  return (s && (s.name || s.label)) || 'Unlabeled strand';
-}
-const MODALITY_SHAPE = {
-  factual:         'ellipse',
-  opinion:         'diamond',
-  desire:          'triangle',
-  plan:            'round-rectangle',
-  self_perception: 'star',
-  hypothetical:    'hexagon',
-  commitment:      'rectangle',
-  hypothesis:      'hexagon',
-  insight:         'pentagon',
-};
-const SHAPE_GLYPH = {
-  ellipse:'●', triangle:'▲', 'round-rectangle':'▮', diamond:'◆',
-  hexagon:'⬡', star:'★', rectangle:'▬', pentagon:'⬠',
-};
-
-let _fcoseRegistered = false;
-function ensureFcose() {
-  if (_fcoseRegistered) return true;
-  if (window.cytoscape && window.cytoscapeFcose) {
-    try { window.cytoscape.use(window.cytoscapeFcose); _fcoseRegistered = true; }
-    catch (e) { /* already registered */ _fcoseRegistered = true; }
-  }
-  return _fcoseRegistered;
-}
-
-function buildElements(data, selStrand, accent) {
-  const strands = [
-    ...data.strands,
-    { id:'_unstranded', name:'Unsorted', color: STRAND_COLORS._unstranded, atoms: data.unstranded || [] },
-  ].filter(s => (s.atoms || []).length > 0);
-
-  const els = [];
-  if (!selStrand) {
-    strands.forEach(s => {
-      const count = s.atoms.length;
-      els.push({ data:{
-        id:'s_'+s.id, kind:'strand', sid:s.id, label:strandName(s),
-        color: strandColor(s),
-        size: 46 + Math.sqrt(count) * 14,
-      }});
-    });
-    return els;
-  }
-
-  const s = strands.find(x => x.id === selStrand);
-  if (!s) return els;
-  const color = strandColor(s);
-  els.push({ data:{ id:'s_'+s.id, kind:'center', sid:s.id, label:strandName(s), color, size:44 }});
-  s.atoms.forEach(a => {
-    const sal  = (a.salience == null ? 1 : a.salience);
-    const conf = (a.confidence == null ? 1 : a.confidence);
-    els.push({ data:{
-      id: a.id, kind:'atom', atom: a, color,
-      shape: MODALITY_SHAPE[a.modality] || 'ellipse',
-      size: 14 + Math.min(sal, 5) * 5,
-      op: 0.30 + conf * 0.55,
-      bw: a.pinned ? 2.5 : 1,
-      bc: a.pinned ? accent : color,
-      short: (a.text || '').slice(0, 22),
-    }});
-    els.push({ data:{ id:'e_'+a.id, source:'s_'+s.id, target:a.id, op: 0.12 + conf * 0.4 }});
-  });
-  return els;
-}
-
-function GraphTab() {
-  const [data, setData] = useState(null);
-  const [libReady, setLibReady] = useState(typeof window !== 'undefined' && !!window.cytoscape);
-  const [libFailed, setLibFailed] = useState(false);
-  const [selectedStrand, setSelectedStrand] = useState(null);
-  const [selectedAtom, setSelectedAtom] = useState(null);
-  const [omniOpen, setOmniOpen] = useState(false);
-  const [omniQuery, setOmniQuery] = useState('');
-
-  const cyEl = useRef(null);
-  const cyRef = useRef(null);
-  const pendingFocus = useRef(null);
-  const omniInput = useRef(null);
-
-  // Load graph payload
   useEffect(() => {
-    fetch('/api/memory/graph').then(r => r.ok ? r.json() : null)
-      .then(d => setData(d || { strands:[], unstranded:[] }))
-      .catch(() => setData({ strands:[], unstranded:[] }));
+    if (!containerRef.current) return;
+    const obs = new ResizeObserver(entries => {
+      const e = entries[0].contentRect;
+      setSize({ w: e.width, h: e.height });
+    });
+    obs.observe(containerRef.current);
+    return () => obs.disconnect();
   }, []);
 
-  // Wait for the deferred Cytoscape CDN script
-  useEffect(() => {
-    if (window.cytoscape) { setLibReady(true); return; }
-    let n = 0;
-    const id = setInterval(() => {
-      if (window.cytoscape) { setLibReady(true); clearInterval(id); }
-      else if (++n > 50) { setLibFailed(true); clearInterval(id); }
-    }, 200);
-    return () => clearInterval(id);
-  }, []);
-
-  // Flat atom index for the omnibar (atom + its strand id)
-  const atomIndex = (() => {
-    if (!data) return [];
-    const out = [];
-    const seen = new Set();
-    const push = (a, sid, sname, scolor) => {
-      if (seen.has(a.id)) return;
-      seen.add(a.id);
-      out.push({ atom:a, strandId:sid, strandName:sname, strandColor:scolor });
-    };
-    (data.strands || []).forEach(s => (s.atoms||[]).forEach(a => push(a, s.id, strandName(s), strandColor(s))));
-    (data.unstranded || []).forEach(a => push(a, '_unstranded', 'Unsorted', STRAND_COLORS._unstranded));
-    return out;
-  })();
-
-  const omniResults = omniQuery.trim()
-    ? atomIndex.filter(({ atom }) => {
-        const q = omniQuery.toLowerCase();
-        return (atom.text||'').toLowerCase().includes(q)
-            || (atom.subject||'').toLowerCase().includes(q)
-            || (atom.predicate||'').toLowerCase().includes(q);
-      }).slice(0, 8)
-    : [];
-
-  function focusAtom(atomId) {
-    const cy = cyRef.current;
-    if (!cy) return;
-    const node = cy.getElementById(atomId);
-    if (!node || node.empty()) return;
-    cy.animate({ center:{ eles:node }, zoom:1.6 }, { duration:480 });
-    node.addClass('pulse');
-    setTimeout(() => { if (node) node.removeClass('pulse'); }, 2400);
-    setSelectedAtom(node.data('atom'));
-  }
-
-  function teleport(entry) {
-    setOmniOpen(false);
-    setOmniQuery('');
-    if (selectedStrand === entry.strandId) {
-      focusAtom(entry.atom.id);
-    } else {
-      pendingFocus.current = entry.atom.id;
-      setSelectedStrand(entry.strandId);
-    }
-  }
-
-  // Create the Cytoscape instance once
-  useEffect(() => {
-    if (!libReady || !data || !cyEl.current || cyRef.current) return;
-    ensureFcose();
-    const cs = getComputedStyle(document.documentElement);
-    const v = k => cs.getPropertyValue(k).trim();
-    const cText = v('--text'), cText3 = v('--text-3'), cAccent = v('--accent');
-
-    const cy = window.cytoscape({
-      container: cyEl.current,
-      elements: [],
-      minZoom: 0.2, maxZoom: 3, wheelSensitivity: 0.2,
-      style: [
-        { selector:'node[kind="strand"]', style:{
-          'background-color':'data(color)', 'background-opacity':0.16,
-          'border-width':1.5, 'border-color':'data(color)',
-          'label':'data(label)', 'color':cText,
-          'font-family':'IBM Plex Mono, monospace', 'font-size':10,
-          'text-transform':'uppercase', 'text-valign':'center', 'text-halign':'center',
-          'width':'data(size)', 'height':'data(size)', 'shape':'ellipse',
-        }},
-        { selector:'node[kind="center"]', style:{
-          'background-color':'data(color)', 'background-opacity':0.26,
-          'border-width':1.5, 'border-color':'data(color)',
-          'label':'data(label)', 'color':cText,
-          'font-family':'IBM Plex Mono, monospace', 'font-size':10,
-          'text-transform':'uppercase', 'text-valign':'center', 'text-halign':'center',
-          'width':'data(size)', 'height':'data(size)', 'shape':'ellipse',
-        }},
-        { selector:'node[kind="atom"]', style:{
-          'background-color':'data(color)', 'background-opacity':'data(op)',
-          'border-width':'data(bw)', 'border-color':'data(bc)', 'shape':'data(shape)',
-          'width':'data(size)', 'height':'data(size)',
-          'label':'data(short)', 'color':cText3,
-          'font-family':'Lora, serif', 'font-size':7,
-          'text-valign':'bottom', 'text-margin-y':3,
-          'text-max-width':84, 'text-wrap':'ellipsis', 'text-overflow-wrap':'anywhere',
-        }},
-        { selector:'edge', style:{
-          'width':1, 'line-color':cText3, 'opacity':'data(op)', 'curve-style':'bezier',
-        }},
-        { selector:'.pulse', style:{ 'border-width':4, 'border-color':cAccent }},
-      ],
+  const nodes = useMemo(() => {
+    const { w, h } = size;
+    const cx = w / 2, cy = h / 2;
+    const sCount = strands.length;
+    if (!sCount) return [];
+    const sRadius = Math.min(w, h) * 0.30;
+    const result = [];
+    strands.forEach((strand, si) => {
+      const sa = (2 * Math.PI * si / sCount) - Math.PI / 2;
+      const sx = cx + sRadius * Math.cos(sa);
+      const sy = cy + sRadius * Math.sin(sa);
+      const atoms = strand.atoms || [];
+      const aCount = atoms.length;
+      const aRadius = Math.min(72, 20 + Math.sqrt(aCount) * 9);
+      atoms.forEach((atom, ai) => {
+        const aa = (2 * Math.PI * ai / Math.max(aCount, 1));
+        result.push({
+          id: atom.id, atom,
+          x: sx + aRadius * Math.cos(aa),
+          y: sy + aRadius * Math.sin(aa),
+          color: strand.color || '#9A8A78',
+        });
+      });
     });
-    cyRef.current = cy;
+    return result;
+  }, [strands, size]);
 
-    cy.on('tap', 'node', evt => {
-      const n = evt.target;
-      const k = n.data('kind');
-      if (k === 'strand')      { setSelectedAtom(null); setSelectedStrand(n.data('sid')); }
-      else if (k === 'center') { setSelectedAtom(null); setSelectedStrand(null); }
-      else if (k === 'atom')   { setSelectedAtom(n.data('atom')); }
+  const strandLabels = useMemo(() => {
+    const { w, h } = size;
+    const cx = w / 2, cy = h / 2;
+    const sCount = strands.length;
+    if (!sCount) return [];
+    const sRadius = Math.min(w, h) * 0.30;
+    return strands.map((strand, si) => {
+      const sa = (2 * Math.PI * si / sCount) - Math.PI / 2;
+      const atoms = strand.atoms || [];
+      const aRadius = Math.min(72, 20 + Math.sqrt(atoms.length) * 9) + 20;
+      return {
+        id: strand.id,
+        x: cx + sRadius * Math.cos(sa) + aRadius * Math.cos(sa),
+        y: cy + sRadius * Math.sin(sa) + aRadius * Math.sin(sa),
+        label: (strand.label || strand.name || '').toUpperCase().slice(0, 16),
+        color: strand.color || '#9A8A78',
+      };
     });
-    cy.on('tap', evt => { if (evt.target === cy) setSelectedAtom(null); });
+  }, [strands, size]);
 
-    return () => { cy.destroy(); cyRef.current = null; };
-  }, [libReady, data]);
-
-  // Rebuild elements + run layout once whenever the view changes
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || !data) return;
-    const cs = getComputedStyle(document.documentElement);
-    const accent = cs.getPropertyValue('--accent').trim();
-    cy.elements().remove();
-    cy.add(buildElements(data, selectedStrand, accent));
-    const layout = cy.layout({
-      name: ensureFcose() ? 'fcose' : 'cose',
-      animate: true, animationDuration: 480, randomize: false,
-      fit: true, padding: 48, nodeRepulsion: 6500, idealEdgeLength: 90,
-      numIter: 1000,
-    });
-    layout.one('layoutstop', () => {
-      if (pendingFocus.current) {
-        const fid = pendingFocus.current;
-        pendingFocus.current = null;
-        focusAtom(fid);
-      }
-    });
-    layout.run();
-  }, [data, selectedStrand]);
-
-  // Cmd/Ctrl+K omnibar
-  useEffect(() => {
-    const h = e => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
-        e.preventDefault();
-        setOmniOpen(o => !o);
-      } else if (e.key === 'Escape') {
-        setOmniOpen(false);
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, []);
-
-  useEffect(() => { if (omniOpen && omniInput.current) omniInput.current.focus(); }, [omniOpen]);
-
-  const selStrandName = (() => {
-    if (!selectedStrand || !data) return null;
-    if (selectedStrand === '_unstranded') return 'Unsorted';
-    const s = (data.strands || []).find(x => x.id === selectedStrand);
-    return s ? s.name : selectedStrand;
-  })();
-
-  if (!data) return (
-    <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
-      <Pulse size={8}/>
-    </div>
-  );
-
-  const totalAtoms = (data.strands||[]).reduce((n,s)=>n+(s.atoms||[]).length,0)
-    + (data.unstranded||[]).length;
-
-  if (totalAtoms === 0) return (
-    <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', padding:48 }}>
-      <p style={{ fontFamily:'var(--font-b)', fontSize:15, color:'var(--text-2)', fontStyle:'italic' }}>
-        Nothing to map yet — the constellation forms as memories build up.
-      </p>
-    </div>
-  );
+  const hoveredNode = hovered ? nodes.find(n => n.id === hovered) : null;
 
   return (
-    <div style={{ flex:1, display:'flex', overflow:'hidden', position:'relative',
-      background:'var(--thread-bg)' }}>
+    <div ref={containerRef} style={{ flex: 1, position: 'relative',
+      overflow: 'hidden', background: 'var(--thread-bg)' }}>
+      <svg width={size.w} height={size.h} style={{ display: 'block' }}>
+        {strandLabels.map(sl => (
+          <text key={sl.id} x={sl.x} y={sl.y}
+            textAnchor="middle" dominantBaseline="middle"
+            style={{ fontFamily: 'var(--font-m)', fontSize: 9, fill: sl.color,
+              letterSpacing: '.10em', pointerEvents: 'none' }}>
+            {sl.label}
+          </text>
+        ))}
+        {nodes.map(n => {
+          const isSelected = n.id === selectedId;
+          const isHovered = n.id === hovered;
+          const dimmed = n.atom.confidence != null && n.atom.confidence < 0.4;
+          const r = isSelected ? 10 : isHovered ? 9 : 7;
+          return (
+            <g key={n.id}
+              onClick={() => onAtomClick(n.atom)}
+              onMouseEnter={() => setHovered(n.id)}
+              onMouseLeave={() => setHovered(null)}
+              style={{ cursor: 'pointer' }}>
+              <circle cx={n.x} cy={n.y} r={r}
+                fill={n.color}
+                opacity={dimmed ? 0.3 : isSelected || isHovered ? 0.9 : 0.65}
+                stroke={isSelected ? 'var(--accent)' : 'none'}
+                strokeWidth={1.5}/>
+              <text x={n.x} y={n.y} textAnchor="middle" dominantBaseline="central"
+                style={{ fontSize: isSelected ? 9 : 7, fill: 'white',
+                  pointerEvents: 'none', userSelect: 'none',
+                  fontFamily: 'sans-serif' }}>
+                {GLYPH_MAP[n.atom.modality] || '●'}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
 
-      {/* Canvas column */}
-      <div style={{ flex:1, position:'relative', overflow:'hidden' }}>
-
-        {/* Breadcrumb / omnibar trigger */}
-        <div style={{ position:'absolute', top:14, left:0, right:0, zIndex:5,
-          display:'flex', alignItems:'center', justifyContent:'center', gap:12,
-          pointerEvents:'none' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:8, pointerEvents:'auto',
-            padding:'5px 12px', borderRadius:8, background:'var(--nav-bg)',
-            border:'1px solid var(--border-2)' }}>
-            <button onClick={() => { setSelectedStrand(null); setSelectedAtom(null); }}
-              style={{ fontFamily:'var(--font-m)', fontSize:10, letterSpacing:'.10em',
-                textTransform:'uppercase',
-                color: selectedStrand ? 'var(--text-3)' : 'var(--accent)', cursor:'pointer' }}>
-              Strands
-            </button>
-            {selStrandName && <>
-              <span style={{ color:'var(--text-3)', fontSize:10 }}>›</span>
-              <span style={{ fontFamily:'var(--font-m)', fontSize:10, letterSpacing:'.10em',
-                textTransform:'uppercase', color:'var(--accent)' }}>{selStrandName}</span>
-            </>}
-          </div>
-          <button onClick={() => setOmniOpen(true)} style={{ pointerEvents:'auto',
-            display:'flex', alignItems:'center', gap:8, padding:'5px 12px', borderRadius:8,
-            background:'var(--nav-bg)', border:'1px solid var(--border-2)', cursor:'pointer' }}>
-            <Ico n="search" size={12} color="var(--text-3)"/>
-            <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-3)' }}>
-              Search · ⌘K
-            </span>
-          </button>
-        </div>
-
-        {/* Cytoscape mount */}
-        {libFailed ? (
-          <div style={{ height:'100%', display:'flex', alignItems:'center', justifyContent:'center',
-            padding:48 }}>
-            <p style={{ fontFamily:'var(--font-b)', fontSize:14, color:'var(--text-3)',
-              fontStyle:'italic', textAlign:'center', maxWidth:340 }}>
-              Graph library couldn't load (offline?). The Memory and Timelines tabs
-              show the same data without it.
-            </p>
-          </div>
-        ) : !libReady ? (
-          <div style={{ height:'100%', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            <Pulse size={8}/>
-          </div>
-        ) : (
-          <div ref={cyEl} style={{ position:'absolute', inset:0 }}/>
-        )}
-
-        {/* Modality legend */}
-        <div style={{ position:'absolute', bottom:14, left:14, zIndex:5,
-          padding:'8px 12px', borderRadius:8, background:'var(--nav-bg)',
-          border:'1px solid var(--border)', display:'flex', flexWrap:'wrap', gap:'4px 12px',
-          maxWidth:300 }}>
-          {Object.entries(MODALITY_SHAPE).map(([mod, shape]) => (
-            <span key={mod} style={{ display:'flex', alignItems:'center', gap:5,
-              fontFamily:'var(--font-m)', fontSize:8.5, letterSpacing:'.08em',
-              textTransform:'uppercase', color:'var(--text-3)' }}>
-              <span style={{ color:'var(--text-2)' }}>{SHAPE_GLYPH[shape]}</span>{mod}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* Side panel */}
-      {selectedAtom && (
-        <div className="fade-up" style={{ width:320, flexShrink:0, borderLeft:'1px solid var(--border)',
-          background:'var(--nav-bg)', overflowY:'auto', padding:'20px 22px' }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-            marginBottom:16 }}>
-            {monoLabel('Atom')}
-            <button onClick={() => setSelectedAtom(null)} style={{ cursor:'pointer' }}>
-              <Ico n="close" size={14} color="var(--text-3)"/>
-            </button>
-          </div>
-          <p style={{ fontFamily:'var(--font-b)', fontSize:15, lineHeight:1.7,
-            color:'var(--text)', marginBottom:16 }}>{selectedAtom.text}</p>
-          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:16 }}>
-            {selectedAtom.subject && selectedAtom.subject !== 'user' && (
-              <MonoBadge color="var(--text-3)">{selectedAtom.subject}</MonoBadge>
-            )}
-            {selectedAtom.predicate && (
-              <MonoBadge color="var(--text-3)">{selectedAtom.predicate}</MonoBadge>
-            )}
-            {selectedAtom.modality && (
-              <MonoBadge color={MODALITY_COLORS[selectedAtom.modality] || 'var(--accent)'}>
-                {selectedAtom.modality}
-              </MonoBadge>
-            )}
-            {selectedAtom.pinned && <MonoBadge color="var(--accent)">pinned</MonoBadge>}
-          </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {selectedAtom.confidence != null && (
-              <div style={{ display:'flex', justifyContent:'space-between' }}>
-                {monoLabel('confidence')}
-                <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-2)' }}>
-                  {Math.round(selectedAtom.confidence * 100)}%
-                </span>
-              </div>
-            )}
-            {selectedAtom.salience != null && (
-              <div style={{ display:'flex', justifyContent:'space-between' }}>
-                {monoLabel('salience')}
-                <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-2)' }}>
-                  {selectedAtom.salience.toFixed ? selectedAtom.salience.toFixed(1) : selectedAtom.salience}
-                </span>
-              </div>
-            )}
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              {monoLabel('added')}
-              <span style={{ fontFamily:'var(--font-m)', fontSize:10, color:'var(--text-2)' }}>
-                {relTime(selectedAtom.created_at)}
-              </span>
+      {hoveredNode && (
+        <div style={{
+          position: 'absolute',
+          left: Math.min(hoveredNode.x + 14, size.w - 290),
+          top: Math.max(hoveredNode.y - 10, 4),
+          background: 'var(--surface)', border: '1px solid var(--border-2)',
+          borderRadius: 6, padding: '6px 10px', maxWidth: 280,
+          pointerEvents: 'none', zIndex: 10,
+        }}>
+          <p style={{ fontFamily: 'var(--font-b)', fontSize: 12, color: 'var(--text)',
+            lineHeight: 1.5, margin: 0 }}>{hoveredNode.atom.text}</p>
+          {hoveredNode.atom.predicate && (
+            <div style={{ marginTop: 4 }}>
+              {monoLabel(hoveredNode.atom.predicate)}
             </div>
-          </div>
+          )}
         </div>
       )}
 
-      {/* Omnibar overlay */}
-      {omniOpen && (
-        <div onClick={() => setOmniOpen(false)} style={{ position:'absolute', inset:0, zIndex:20,
-          background:'rgba(0,0,0,.18)', display:'flex', justifyContent:'center',
-          paddingTop:'12vh' }}>
-          <div onClick={e => e.stopPropagation()} style={{ width:'min(560px,86%)', height:'fit-content',
-            background:'var(--surface)', border:'1px solid var(--border-2)', borderRadius:12,
-            overflow:'hidden' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10, padding:'14px 18px',
-              borderBottom:'1px solid var(--border)' }}>
-              <Ico n="search" size={15} color="var(--text-3)"/>
-              <input ref={omniInput} value={omniQuery} onChange={e => setOmniQuery(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && omniResults[0]) teleport(omniResults[0]); }}
-                placeholder="Jump to a memory…"
-                style={{ flex:1, fontFamily:'var(--font-b)', fontSize:15, color:'var(--text)' }}/>
-            </div>
-            {omniResults.length > 0 && (
-              <div style={{ maxHeight:'40vh', overflowY:'auto' }}>
-                {omniResults.map(entry => (
-                  <button key={entry.atom.id} onClick={() => teleport(entry)} style={{
-                    display:'flex', alignItems:'center', gap:10, width:'100%', textAlign:'left',
-                    padding:'10px 18px', borderBottom:'1px solid var(--rule)', cursor:'pointer' }}>
-                    <span style={{ color: entry.strandColor || STRAND_COLORS[entry.strandId] || STRAND_COLORS._unstranded,
-                      fontSize:10 }}>●</span>
-                    <span style={{ flex:1, fontFamily:'var(--font-b)', fontSize:13, color:'var(--text)',
-                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {entry.atom.text}
-                    </span>
-                    {monoLabel(entry.strandName, undefined, { flexShrink:0 })}
-                  </button>
-                ))}
-              </div>
-            )}
-            {omniQuery.trim() && omniResults.length === 0 && (
-              <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)',
-                padding:'14px 18px', fontStyle:'italic' }}>No matches.</p>
-            )}
-          </div>
+      {strands.length === 0 && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex',
+          alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ fontFamily: 'var(--font-b)', fontSize: 14, color: 'var(--text-3)',
+            fontStyle: 'italic' }}>No memories to map yet.</p>
         </div>
       )}
     </div>
@@ -1818,7 +1742,7 @@ function MemorySurface() {
   }
 
   const currentTierRank = TIER_ORDER[tier] ?? 1;
-  const allTabs = ['overview','fragments','graph','review','goals','timelines','inferred','skills'];
+  const allTabs = ['overview','fragments','review','goals','timelines','inferred','skills'];
 
   function tabAllowed(t) {
     const minTier = TAB_MIN_TIER[t] || 'essential';
@@ -1878,8 +1802,7 @@ function MemorySurface() {
             memories={memories} questions={questions} goals={goals}
             tier={tier} onTabSwitch={setTab}/>
         )}
-        {tab==='fragments' && <FragmentsTab memories={memories}/>}
-        {tab==='graph' && <GraphTab/>}
+        {tab==='fragments' && <GardenTab/>}
         {tab==='review' && (
           <ReviewTab questions={questions} onResolve={handleResolve} onChange={loadData}/>
         )}
