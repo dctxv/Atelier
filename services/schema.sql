@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS message (
     role       TEXT NOT NULL,
     content    TEXT NOT NULL,
     model      TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    meta       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_message_session ON message(session_id, created_at);
 

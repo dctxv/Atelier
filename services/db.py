@@ -160,6 +160,7 @@ async def init_db():
             "ALTER TABLE document    ADD COLUMN project_id TEXT",
             "ALTER TABLE memory_atom ADD COLUMN project_id TEXT",
             "ALTER TABLE session     ADD COLUMN project_id TEXT",
+            "ALTER TABLE message     ADD COLUMN meta       TEXT",
             "ALTER TABLE project     ADD COLUMN description TEXT",
             # Weekly diff note columns (Fix 3 — never re-ingest digest as memory atoms)
             "ALTER TABLE note ADD COLUMN source_kind TEXT",

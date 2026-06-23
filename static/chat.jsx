@@ -226,6 +226,16 @@ function DebugTrace({ data }) {
       background:'var(--surface)',fontFamily:'var(--font-m)',fontSize:10.5,
       lineHeight:1.5,color:'var(--text-q)',
     }}>
+      <div style={{
+        display:'flex',alignItems:'center',justifyContent:'space-between',
+        gap:10,marginBottom:8,paddingBottom:7,borderBottom:'1px solid var(--border)',
+      }}>
+        <span style={{
+          fontFamily:'var(--font-m)',fontSize:10,letterSpacing:'.08em',
+          textTransform:'uppercase',color:'var(--accent-tx)',
+        }}>Debug trace</span>
+        <span style={{color:'var(--text-3)'}}>context audit</span>
+      </div>
       <div style={{display:'grid',gap:6}}>
         {field('Intent mode', <span>{data.intent_mode || 'unknown'}</span>)}
         {field('Retrieved memories', rowList(memories))}

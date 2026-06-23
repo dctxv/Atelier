@@ -539,8 +539,6 @@ async def chat_stream(request: Request):
                 assistant_text = "".join(assistant_chunks).strip()
                 if session_id and user_text:
                     await sessions.add_message(session_id, "user", user_text, model)
-                if session_id and assistant_text:
-                    await sessions.add_message(session_id, "assistant", assistant_text, model)
                 if debug_trace is not None:
                     extraction_debug = await _run_debug_extraction(
                         user_text=user_text,
@@ -554,8 +552,15 @@ async def chat_stream(request: Request):
                     if extraction_debug.get("extraction_skipped"):
                         debug_trace["extraction_skipped"] = extraction_debug["extraction_skipped"]
                     debug_trace["review_state"] = await _debug_review_state()
+                    if session_id and assistant_text:
+                        await sessions.add_message(
+                            session_id, "assistant", assistant_text, model,
+                            meta={"debug": debug_trace},
+                        )
                     yield _evt("debug", debug_trace)
                 else:
+                    if session_id and assistant_text:
+                        await sessions.add_message(session_id, "assistant", assistant_text, model)
                     await _queue_extraction_if_needed(
                         user_text=user_text,
                         assistant_text=assistant_text,
@@ -1076,8 +1081,6 @@ async def chat_stream(request: Request):
         finally:
             # [5] PERSIST — always, regardless of exit path
             assistant_text = "".join(assistant_chunks).strip()
-            if session_id and assistant_text:
-                await sessions.add_message(session_id, "assistant", assistant_text, model)
             if debug_trace is not None:
                 extraction_debug = await _run_debug_extraction(
                     user_text=user_text,
@@ -1091,8 +1094,15 @@ async def chat_stream(request: Request):
                 if extraction_debug.get("extraction_skipped"):
                     debug_trace["extraction_skipped"] = extraction_debug["extraction_skipped"]
                 debug_trace["review_state"] = await _debug_review_state()
+                if session_id and assistant_text:
+                    await sessions.add_message(
+                        session_id, "assistant", assistant_text, model,
+                        meta={"debug": debug_trace},
+                    )
                 yield _evt("debug", debug_trace)
             else:
+                if session_id and assistant_text:
+                    await sessions.add_message(session_id, "assistant", assistant_text, model)
                 await _queue_extraction_if_needed(
                     user_text=user_text,
                     assistant_text=assistant_text,

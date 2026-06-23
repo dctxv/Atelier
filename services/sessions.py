@@ -12,6 +12,7 @@ correct: deleting a session — and only that — leaves its atoms to be reclaim
 """
 from __future__ import annotations
 
+import json
 import uuid
 
 from . import db
@@ -28,8 +29,16 @@ def _session_row(r: dict) -> dict:
 
 
 def _message_row(r: dict) -> dict:
-    return {"id": r["id"], "role": r["role"], "content": r["content"],
-            "model": r["model"], "created_at": r["created_at"]}
+    out = {"id": r["id"], "role": r["role"], "content": r["content"],
+           "model": r["model"], "created_at": r["created_at"]}
+    if r.get("meta"):
+        try:
+            meta = json.loads(r["meta"])
+            if isinstance(meta, dict) and meta.get("debug"):
+                out["debug"] = meta["debug"]
+        except Exception:
+            pass
+    return out
 
 
 async def list_sessions(limit: int = 200, project_id: str | None = None,
@@ -114,7 +123,13 @@ async def delete(session_id: str) -> bool:
     return True
 
 
-async def add_message(session_id: str, role: str, content: str, model: str | None = None) -> str:
+async def add_message(
+    session_id: str,
+    role: str,
+    content: str,
+    model: str | None = None,
+    meta: dict | None = None,
+) -> str:
     """Append a message and bump updated_at, in one transaction. INSERT-OR-IGNOREs
     the session first so atom source_ids never dangle (the core invariant)."""
     mid = str(uuid.uuid4())
@@ -125,9 +140,10 @@ async def add_message(session_id: str, role: str, content: str, model: str | Non
             "INSERT OR IGNORE INTO session(id, name, model, created_at, updated_at) VALUES(?,?,?,?,?)",
             (session_id, "New chat", model, ts, ts),
         )
+        meta_json = json.dumps(meta) if meta else None
         conn.execute(
-            "INSERT INTO message(id, session_id, role, content, model, created_at) VALUES(?,?,?,?,?,?)",
-            (mid, session_id, role, content, model, ts),
+            "INSERT INTO message(id, session_id, role, content, model, created_at, meta) VALUES(?,?,?,?,?,?,?)",
+            (mid, session_id, role, content, model, ts, meta_json),
         )
         conn.execute("UPDATE session SET updated_at=? WHERE id=?", (ts, session_id))
 
@@ -158,9 +174,13 @@ async def import_sessions(sessions: list[dict]) -> int:
                 if role not in ("user", "assistant") or content is None:
                     continue
                 last += 1   # deterministic ordering for same-second messages
+                meta = {}
+                if m.get("debug"):
+                    meta["debug"] = m.get("debug")
                 conn.execute(
-                    "INSERT INTO message(id, session_id, role, content, model, created_at) VALUES(?,?,?,?,?,?)",
-                    (str(uuid.uuid4()), sid, role, content, m.get("model"), last),
+                    "INSERT INTO message(id, session_id, role, content, model, created_at, meta) VALUES(?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), sid, role, content, m.get("model"), last,
+                     json.dumps(meta) if meta else None),
                 )
             conn.execute("UPDATE session SET updated_at=? WHERE id=?", (last, sid))
 
