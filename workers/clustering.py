@@ -366,19 +366,23 @@ async def cluster_memory(payload: dict | None = None):
     sample_size = await _cfg("label.sample_size", 6)  # [VALIDATE]
     block_size = await _cfg("cluster.block_size", 512)
     max_iter = await _cfg("cluster.max_iter", 20)
+    max_pool_size = await _cfg("cluster.max_pool_size", 100)
 
     force_full = bool(payload.get("full") or payload.get("backfill"))
     dirty_ids = await _dirty_ids()
 
     # Check version before the ~51 MB matrix copy to skip clean hourly runs cheaply.
+    # Early-exit uses the no-copy meta; the stamp uses the version from the copied
+    # snapshot so we never stamp a matrix version we didn't actually cluster.
     snapshot_meta = await retrieval.memory_knn_snapshot(copy=False)
-    version = tuple(snapshot_meta["version"])
+    meta_version = tuple(snapshot_meta["version"])
     last_version = await config.get_setting(_VERSION_KEY)
 
-    if not force_full and not dirty_ids and last_version == _version_json(version):
+    if not force_full and not dirty_ids and last_version == _version_json(meta_version):
         return {"ok": True, "noop": "clean"}
 
     snapshot = await retrieval.memory_knn_snapshot(copy=True)
+    version = tuple(snapshot["version"])  # stamp from the copy we actually clustered
     active_rows = await _active_rows()
     real_embeddings = await _using_real_embeddings()
 
@@ -464,7 +468,28 @@ async def cluster_memory(payload: dict | None = None):
         # re-join as leftovers below if they still don't match anything.
         dirty_set = set(dirty_active)
         pool_stable = [aid for aid in pending_pool if aid not in dirty_set]
-        combined = list(dict.fromkeys(pool_stable + leftovers))
+
+        # Re-run centroid matching for pool_stable members: a new strand may
+        # have formed since they entered the pool, and they should join it
+        # rather than be forced to spawn a new one.
+        pool_unmatched: list[str] = []
+        for aid in pool_stable:
+            vec = matrix[active_index[aid]]
+            candidates = []
+            for s in existing_active:
+                sim = float(vec @ s["centroid_vec"])
+                if sim >= sim_threshold:
+                    candidates.append((sim, s["id"]))
+            if candidates:
+                assignments[aid] = sorted(candidates, key=lambda item: (-item[0], item[1]))[0][1]
+            else:
+                pool_unmatched.append(aid)
+
+        # Combined: pool members still unmatched + new leftovers from this pass.
+        # Cap to max_pool_size (newest atoms first) to prevent monotonic growth
+        # from genuine noise accumulating between weekly full passes.
+        combined = list(dict.fromkeys(pool_unmatched + leftovers))
+        combined = combined[-max_pool_size:]
 
         if len(combined) >= min_cluster_size:
             combined_indices = [active_index[aid] for aid in combined]
