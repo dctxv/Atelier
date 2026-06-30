@@ -220,6 +220,7 @@ function DocumentsSurface() {
   const [err, setErr] = useState(null);
   const [tab, setTab] = useState('documents');
   const [usage, setUsage] = useState(null);
+  const [search, setSearch] = useState('');
   const pollRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -313,19 +314,34 @@ function DocumentsSurface() {
               )}
             </div>
 
-            {/* Stats strip */}
+            {/* Stats strip + search */}
             {docs.length > 0 && (
-              <div style={{ display: 'flex', gap: 24, marginBottom: 20,
-                fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-3)',
-                letterSpacing: '.06em', textTransform: 'uppercase' }}>
-                <span>{docs.length} document{docs.length !== 1 ? 's' : ''}</span>
-                {readyCount > 0 && <span>{readyCount} ready · searchable</span>}
-                {activeCount > 0 && (
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <Pulse size={5}/> {activeCount} processing
-                  </span>
-                )}
-              </div>
+              <>
+                <div style={{ display: 'flex', gap: 24, marginBottom: 14,
+                  fontFamily: 'var(--font-m)', fontSize: 11, color: 'var(--text-3)',
+                  letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                  <span>{docs.length} document{docs.length !== 1 ? 's' : ''}</span>
+                  {readyCount > 0 && <span>{readyCount} ready · searchable</span>}
+                  {activeCount > 0 && (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <Pulse size={5}/> {activeCount} processing
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '5px 12px', border: '1px solid var(--border-2)', borderRadius: 8,
+                  background: 'var(--surface)', marginBottom: 18 }}>
+                  <Ico n="search" size={12} color="var(--text-3)"/>
+                  <input value={search} onChange={e => setSearch(e.target.value)}
+                    placeholder="Filter by filename…"
+                    style={{ fontFamily: 'var(--font-m)', fontSize: 12,
+                      color: 'var(--text)', flex: 1 }}/>
+                  {search && (
+                    <button onClick={() => setSearch('')} style={{ cursor: 'pointer',
+                      color: 'var(--text-3)', fontFamily: 'var(--font-m)', fontSize: 11 }}>✕</button>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Document list */}
@@ -342,13 +358,22 @@ function DocumentsSurface() {
                   searched alongside your memory in every chat.
                 </div>
               </div>
-            ) : (
-              <div>
-                {docs.map(doc => (
-                  <DocRow key={doc.id} doc={doc} onDelete={handleDelete}/>
-                ))}
-              </div>
-            )}
+            ) : (() => {
+              const q = search.trim().toLowerCase();
+              const filtered = q ? docs.filter(d => d.filename.toLowerCase().includes(q)) : docs;
+              return filtered.length === 0 ? (
+                <div style={{ fontFamily: 'var(--font-m)', fontSize: 12,
+                  color: 'var(--text-3)', fontStyle: 'italic', padding: '20px 0' }}>
+                  No documents match "{search}"
+                </div>
+              ) : (
+                <div>
+                  {filtered.map(doc => (
+                    <DocRow key={doc.id} doc={doc} onDelete={handleDelete}/>
+                  ))}
+                </div>
+              );
+            })()}
           </>
         )}
 
