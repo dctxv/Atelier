@@ -215,6 +215,8 @@ function AtomDetailPanel({ atom, onClose, onUpdate }) {
   const [events, setEvents] = useState([]);
   const [eventsLoaded, setEventsLoaded] = useState(false);
   const [confirming, setConfirming] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
 
   useEffect(() => {
     if (!atom) return;
@@ -231,6 +233,16 @@ function AtomDetailPanel({ atom, onClose, onUpdate }) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pinned: !atom.pinned }),
     });
+    if (onUpdate) onUpdate();
+  }
+
+  async function saveEdit() {
+    if (!draft.trim()) return;
+    await fetch(`/api/memory/${atom.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: draft.trim() }),
+    });
+    setEditing(false);
     if (onUpdate) onUpdate();
   }
 
@@ -292,8 +304,17 @@ function AtomDetailPanel({ atom, onClose, onUpdate }) {
             <MonoBadge color={MODALITY_COLORS.insight}>(inferred)</MonoBadge>
           </div>
         )}
-        <p style={{ fontFamily: 'var(--font-b)', fontSize: 14.5, lineHeight: 1.7,
-          color: 'var(--text)' }}>{atom.text}</p>
+        {editing ? (
+          <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={3}
+            autoFocus
+            style={{ width: '100%', fontFamily: 'var(--font-b)', fontSize: 14,
+              color: 'var(--text)', lineHeight: 1.65, background: 'var(--thread-bg)',
+              border: '1px solid var(--border-2)', borderRadius: 6,
+              padding: '8px 10px', resize: 'vertical' }}/>
+        ) : (
+          <p style={{ fontFamily: 'var(--font-b)', fontSize: 14.5, lineHeight: 1.7,
+            color: 'var(--text)' }}>{atom.text}</p>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -308,8 +329,19 @@ function AtomDetailPanel({ atom, onClose, onUpdate }) {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <GhostBtn onClick={togglePin}>{atom.pinned ? 'Unpin' : 'Pin'}</GhostBtn>
-        {confirming === 'retract' ? (
+        {editing ? (
+          <>
+            <GhostBtn onClick={saveEdit}
+              style={{ color: 'var(--accent)', borderColor: 'var(--accent-bd)' }}>Save</GhostBtn>
+            <GhostBtn onClick={() => setEditing(false)}>Cancel</GhostBtn>
+          </>
+        ) : (
+          <>
+            <GhostBtn onClick={() => { setDraft(atom.text); setEditing(true); }}>Edit</GhostBtn>
+            <GhostBtn onClick={togglePin}>{atom.pinned ? 'Unpin' : 'Pin'}</GhostBtn>
+          </>
+        )}
+        {!editing && (confirming === 'retract' ? (
           <>
             <GhostBtn onClick={retract}
               style={{ color: 'oklch(52% .15 25)', borderColor: 'oklch(70% .10 25)' }}>
@@ -333,7 +365,7 @@ function AtomDetailPanel({ atom, onClose, onUpdate }) {
               Forget
             </GhostBtn>
           </>
-        )}
+        ))}
       </div>
 
       {eventsLoaded && events.length > 0 && (
@@ -1663,7 +1695,6 @@ function MemorySurface() {
   const [memories, setMemories] = useState([]);
   const [questions, setQuestions] = useState({ open:[], resolved:[] });
   const [goals, setGoals] = useState([]);
-  const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reviewBadge, setReviewBadge] = useState(0);
   const [tier, setTier] = useState('living');
@@ -1672,14 +1703,12 @@ function MemorySurface() {
     setLoading(true);
     Promise.all([
       fetch('/api/memory').then(r=>r.ok?r.json():{memories:[]}).catch(()=>({memories:[]})),
-      fetch('/api/skills').then(r=>r.ok?r.json():{skills:[]}).catch(()=>({skills:[]})),
       fetch('/api/memory/questions').then(r=>r.ok?r.json():{open:[],resolved:[]}).catch(()=>({open:[],resolved:[]})),
       fetch('/api/memory/goals').then(r=>r.ok?r.json():{goals:[]}).catch(()=>({goals:[]})),
       fetch('/api/config').then(r=>r.ok?r.json():null).catch(()=>null),
       fetch('/api/memory/review').then(r=>r.ok?r.json():{counts:{}}).catch(()=>({counts:{}})),
-    ]).then(([memData, skillData, qData, goalData, cfgData, revData]) => {
+    ]).then(([memData, qData, goalData, cfgData, revData]) => {
       setMemories(memData.memories || memData.memory || []);
-      setSkills(skillData.skills || []);
       setQuestions(qData);
       setReviewBadge((qData.open||[]).length + ((revData.counts||{}).total||0));
       setGoals(goalData.goals || []);
@@ -1734,15 +1763,8 @@ function MemorySurface() {
     loadData();
   }
 
-  async function toggleSkill(sk) {
-    const newStatus = sk.status==='active' ? 'inactive' : 'active';
-    setSkills(prev => prev.map(s => s.id===sk.id ? {...s,status:newStatus} : s));
-    try { await fetch(`/api/skills/${sk.id}/toggle`, {method:'POST'}); }
-    catch { setSkills(prev => prev.map(s => s.id===sk.id ? {...s,status:sk.status} : s)); }
-  }
-
   const currentTierRank = TIER_ORDER[tier] ?? 1;
-  const allTabs = ['overview','fragments','review','goals','timelines','inferred','skills'];
+  const allTabs = ['overview','fragments','review','goals','timelines','inferred'];
 
   function tabAllowed(t) {
     const minTier = TAB_MIN_TIER[t] || 'essential';
@@ -1809,53 +1831,10 @@ function MemorySurface() {
         {tab==='goals' && <GoalsTab goals={goals}/>}
         {tab==='timelines' && <TimelinesTab tier={tier}/>}
         {tab==='inferred' && <InferredTab/>}
-        {tab==='skills' && (
-          <SkillsTab skills={skills} onToggle={toggleSkill}/>
-        )}
       </div>
     </div>
   );
 }
 
-// ── Skills tab ─────────────────────────────────────────────────────────────
-function SkillsTab({ skills, onToggle }) {
-  return (
-    <div className="scroll" style={{ flex:1, background:'var(--thread-bg)' }}>
-      <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 40px' }}>
-        <SectionLabel
-          right={`${skills.filter(s=>s.status==='active'||s.enabled!==false).length} of ${skills.length}`}
-          style={{ marginBottom:16 }}>
-          Skills
-        </SectionLabel>
-        {skills.length===0 && (
-          <p style={{ fontFamily:'var(--font-m)', fontSize:12, color:'var(--text-3)', fontStyle:'italic' }}>
-            No skills found.
-          </p>
-        )}
-        {skills.map((sk,i) => {
-          const isOn = sk.enabled!==false && sk.status!=='inactive';
-          return (
-            <div key={sk.id||i}>
-              <div style={{ display:'flex', alignItems:'center', gap:16, padding:'12px 0' }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:3 }}>
-                    <span style={{ fontFamily:'var(--font-b)', fontSize:14.5, fontStyle:'italic',
-                      color: isOn ? 'var(--text)' : 'var(--text-q)' }}>{sk.name}</span>
-                    {sk.category && monoLabel(sk.category, undefined, { marginLeft:4 })}
-                  </div>
-                  <span style={{ fontFamily:'var(--font-m)', fontSize:10.5, color:'var(--text-3)' }}>
-                    {sk.description || sk.when_to_use || ''}
-                  </span>
-                </div>
-                <Toggle on={isOn} onToggle={() => onToggle(sk)}/>
-              </div>
-              {i<skills.length-1 && <Rule/>}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 window.V2Memory = { MemorySurface };
