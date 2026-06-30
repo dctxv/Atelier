@@ -203,6 +203,14 @@ async def init_db():
             # Task source tracking for assistant commitments
             "ALTER TABLE task ADD COLUMN source_kind TEXT",
             "ALTER TABLE task ADD COLUMN source_id   TEXT",
+            # Section-aware document retrieval (additive; NULL ⇒ legacy flat chunk)
+            "ALTER TABLE document_chunk ADD COLUMN heading      TEXT",
+            "ALTER TABLE document_chunk ADD COLUMN heading_path TEXT",   # JSON array
+            "ALTER TABLE document_chunk ADD COLUMN depth        INTEGER",
+            "ALTER TABLE document_chunk ADD COLUMN section_id   TEXT",
+            "ALTER TABLE document_chunk ADD COLUMN page_no      INTEGER",
+            # Store file_id on document so reindex can locate the source file
+            "ALTER TABLE document ADD COLUMN file_id TEXT",
         ]
         for stmt in _migrations:
             try:
@@ -223,6 +231,8 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_atom_strand    ON memory_atom(strand_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_atom_cluster_dirty ON memory_atom(cluster_dirty, status)",
             "CREATE INDEX IF NOT EXISTS idx_task_source    ON task(source_kind, source_id)",
+            # Neighbour expansion scans one section in seq order
+            "CREATE INDEX IF NOT EXISTS idx_docchunk_section ON document_chunk(section_id, seq)",
         ]
         for stmt in _post_indexes:
             try:

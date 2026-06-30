@@ -52,7 +52,8 @@ async def upload_file(file: UploadFile = File(...)):
     import os
     ext = os.path.splitext(safe)[1].lower()
     if mime in _INGEST_MIMES or ext in _INGEST_EXTS:
-        doc = await doc_service.create(file.filename or safe, mime, len(content))
+        doc = await doc_service.create(file.filename or safe, mime, len(content),
+                                       file_id=entry["id"])
         await jobs.enqueue("ingest_document", {"doc_id": doc["id"], "file_id": entry["id"]})
         entry["document_id"] = doc["id"]
 

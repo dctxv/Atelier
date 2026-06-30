@@ -6,11 +6,7 @@ const NAV = [
   { id:'projects',  icon:'projects' },
   { id:'research',  icon:'search'   },
   { id:'memory',    icon:'memory'   },
-  { id:'notes',     icon:'notes'    },
-  { id:'scratchpad',icon:'sparkle'  },
-  { id:'tasks',     icon:'tasks'    },
   { id:'documents', icon:'book'     },
-  { id:'files',     icon:'files'    },
   { id:'settings',  icon:'gear'     },
 ];
 

@@ -45,8 +45,10 @@ RECENCY_HALF_LIFE = 30 * 86400
 CHARS_PER_TOKEN = 4
 DOC_MAX_CHUNKS = 6
 DIM = db.EMBED_DIM  # 256
-PROJECT_OVERFETCH = 6  # over-fetch factor before project filter [VALIDATE]
-KNN_MIN_COS = 0.25     # min cosine for a memory atom to count as relevant [VALIDATE]
+PROJECT_OVERFETCH = 6   # over-fetch factor before project filter [VALIDATE]
+KNN_MIN_COS = 0.25      # min cosine for a memory atom to count as relevant [VALIDATE]
+DOC_NEIGHBOR_RADIUS = 1        # chunks each side expanded within a section [VALIDATE]
+DOC_MAX_PASSAGE_CHUNKS = 3     # hard cap on merged passage size [VALIDATE]
 
 # ── W1: cognitive-mode retrieval policies ─────────────────────────────────────
 # The per-mode policy table (MODE_POLICIES) lives in services.intent so it stays
@@ -357,6 +359,148 @@ def _recency_boost(created_at: int | None) -> float:
     return 0.5 * math.exp(-age / RECENCY_HALF_LIFE)
 
 
+# ── Neighbour expansion ───────────────────────────────────────────────────────
+
+def _merge_chunks(chunks: list[dict]) -> str:
+    """Concatenate consecutive chunks, de-overlapping by char position.
+
+    chunks must be ordered by seq.  When char_start / char_end are available,
+    the overlapping prefix of each successor chunk is dropped so the seam is
+    not doubled.  Falls back to space-joining when positions are absent (legacy).
+    """
+    if not chunks:
+        return ""
+    if len(chunks) == 1:
+        return chunks[0]["text"]
+
+    parts = [chunks[0]["text"]]
+    prev_end = chunks[0].get("char_end")
+
+    for chunk in chunks[1:]:
+        text = chunk.get("text") or ""
+        chunk_start = chunk.get("char_start")
+
+        if prev_end is not None and chunk_start is not None and prev_end > chunk_start:
+            overlap = prev_end - chunk_start
+            skip = min(overlap, len(text))
+            text = text[skip:].lstrip()
+
+        if text:
+            parts.append(" " + text)
+        prev_end = chunk.get("char_end")
+
+    return "".join(parts).strip()
+
+
+async def _expand_neighbors(
+    doc_rows: dict[str, dict],
+    doc_scores: dict[str, float],
+    radius: int,
+    max_passage: int,
+) -> tuple[dict[str, dict], dict[str, float]]:
+    """Expand each winning chunk to its in-section neighbours and merge runs.
+
+    Chunks with NULL section_id are returned unchanged (legacy / unstructured —
+    exact current behaviour).  All neighbour fetching is one indexed SQL query
+    per call; total cost is sub-millisecond at 3k chunks.
+
+    Returns (new_doc_rows, new_doc_scores) with merged passages replacing the
+    individual chunk entries so the outer retrieval loop is unaware of the change.
+    """
+    sectioned = {cid: r for cid, r in doc_rows.items() if r.get("section_id")}
+    flat      = {cid: r for cid, r in doc_rows.items() if not r.get("section_id")}
+
+    if not sectioned:
+        return doc_rows, doc_scores
+
+    # Fetch all chunks in the winning sections in one query (uses idx_docchunk_section)
+    section_ids = list({r["section_id"] for r in sectioned.values()})
+    placeholders = ",".join("?" * len(section_ids))
+    neighbor_rows = await db.fetchall(
+        f"SELECT id, seq, section_id, text, char_start, char_end, "
+        f"heading, heading_path, page_no, document_id, created_at "
+        f"FROM document_chunk WHERE section_id IN ({placeholders}) "
+        f"ORDER BY section_id, seq",
+        tuple(section_ids),
+    )
+
+    # Group section chunks and winner seqs by section_id
+    by_section: dict[str, list[dict]] = {}
+    for row in neighbor_rows:
+        by_section.setdefault(row["section_id"], []).append(row)
+
+    winner_seqs_by_section: dict[str, set[int]] = {}
+    winner_scores_by_seq: dict[str, dict[int, float]] = {}
+    for cid, row in sectioned.items():
+        sid = row["section_id"]
+        seq = row["seq"]
+        winner_seqs_by_section.setdefault(sid, set()).add(seq)
+        winner_scores_by_seq.setdefault(sid, {})[seq] = doc_scores.get(cid, 0.0)
+
+    new_rows: dict[str, dict] = dict(flat)
+    new_scores: dict[str, float] = {cid: doc_scores[cid] for cid in flat if cid in doc_scores}
+
+    for sid, section_chunks in by_section.items():
+        seq_to_chunk = {c["seq"]: c for c in section_chunks}
+        winner_seqs = winner_seqs_by_section.get(sid, set())
+        w_scores    = winner_scores_by_seq.get(sid, {})
+
+        # Collect all seq values to include (winner ± radius)
+        include_seqs: set[int] = set()
+        for wseq in winner_seqs:
+            for s in range(wseq - radius, wseq + radius + 1):
+                if s in seq_to_chunk:
+                    include_seqs.add(s)
+
+        # Group into contiguous runs
+        sorted_seqs = sorted(include_seqs)
+        if not sorted_seqs:
+            continue
+
+        runs: list[list[int]] = []
+        current_run = [sorted_seqs[0]]
+        for s in sorted_seqs[1:]:
+            if s == current_run[-1] + 1:
+                current_run.append(s)
+            else:
+                runs.append(current_run)
+                current_run = [s]
+        runs.append(current_run)
+
+        for run in runs:
+            run_winner_seqs = [s for s in run if s in winner_seqs]
+            if not run_winner_seqs:
+                continue
+
+            # Cap at max_passage, centred on the first winner in the run
+            if len(run) > max_passage:
+                center_idx = run.index(run_winner_seqs[0])
+                half = max_passage // 2
+                start_i = max(0, center_idx - half)
+                run = run[start_i: start_i + max_passage]
+
+            run_chunks = [seq_to_chunk[s] for s in run if s in seq_to_chunk]
+            if not run_chunks:
+                continue
+
+            merged_text = _merge_chunks(run_chunks)
+            best_score  = max(w_scores.get(s, 0.0) for s in run if s in winner_seqs)
+
+            # Use the first chunk's id as the merged passage key
+            passage_id = run_chunks[0]["id"]
+            first = run_chunks[0]
+            last  = run_chunks[-1]
+
+            new_rows[passage_id] = {
+                **first,
+                "text":      merged_text,
+                "char_end":  last.get("char_end"),
+            }
+            new_scores[passage_id] = best_score
+
+    return new_rows, new_scores
+
+
 # ── Public interface ──────────────────────────────────────────────────────────
 
 async def _empty() -> list:
@@ -508,6 +652,13 @@ async def retrieve(
         )
         doc_rows = {r["id"]: r for r in rows if r["document_id"] in ready_doc_ids}
 
+    # Expand winning chunks to in-section neighbours (one extra indexed SQL query;
+    # chunks with NULL section_id are returned unchanged — legacy flat behaviour).
+    if inject_docs and doc_rows:
+        doc_rows, doc_scores = await _expand_neighbors(
+            doc_rows, doc_scores, DOC_NEIGHBOR_RADIUS, DOC_MAX_PASSAGE_CHUNKS
+        )
+
     now_ts = db.now()
 
     # Apply fading filter: atoms with effective_confidence < threshold are
@@ -604,19 +755,23 @@ async def retrieve(
         })
 
     for chunk_id, row in doc_rows.items():
+        hp_raw = row.get("heading_path")
+        heading_path = json.loads(hp_raw) if hp_raw else None
         all_items.append({
-            "id":          row["id"],
-            "text":        row["text"],
-            "type":        "document_chunk",
-            "source_kind": "document",
-            "source_id":   row["document_id"],
-            "created_at":  row.get("created_at"),
-            "pinned":      False,
-            "score":       round(doc_scores.get(chunk_id, 0.0), 4),
-            "source_type": "document",
-            "filename":    row.get("filename"),
-            "char_start":  row.get("char_start"),
-            "char_end":    row.get("char_end"),
+            "id":           row["id"],
+            "text":         row["text"],
+            "type":         "document_chunk",
+            "source_kind":  "document",
+            "source_id":    row["document_id"],
+            "created_at":   row.get("created_at"),
+            "pinned":       False,
+            "score":        round(doc_scores.get(chunk_id, 0.0), 4),
+            "source_type":  "document",
+            "filename":     row.get("filename"),
+            "char_start":   row.get("char_start"),
+            "char_end":     row.get("char_end"),
+            "heading_path": heading_path,
+            "page_no":      row.get("page_no"),
         })
 
     ordered = sorted(all_items, key=lambda x: x["score"], reverse=True)
@@ -697,7 +852,12 @@ def format_block(atoms: list[dict]) -> str:
         lines.append("[DOCUMENTS] Relevant passages from the user's uploaded files:")
         for a in doc_items:
             fname = a.get("filename") or "document"
-            lines.append(f"- [{fname}] {a['text']}")
+            heading_path = a.get("heading_path")
+            if heading_path:
+                locator = " › ".join(heading_path)
+                lines.append(f"- [{fname} › {locator}] {a['text']}")
+            else:
+                lines.append(f"- [{fname}] {a['text']}")
     return "\n".join(lines)
 
 

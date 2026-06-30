@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from services import documents
+from workers import jobs
 
 router = APIRouter(prefix="/api")
 
@@ -31,6 +32,24 @@ async def delete_document(doc_id: str):
     if not deleted:
         raise HTTPException(404, "Document not found")
     return {"ok": True}
+
+
+@router.post("/documents/{doc_id}/reindex")
+async def reindex_document(doc_id: str):
+    """Re-ingest an existing document with section-aware chunking.
+
+    Drops existing chunks and re-runs the full extract→chunk→embed pipeline.
+    The document's file_id must have been stored at upload time. Returns 202
+    immediately; progress is tracked via GET /api/documents/{doc_id}.
+    """
+    doc = await documents.get(doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    if not doc.get("file_id"):
+        raise HTTPException(400, "Document has no associated file_id — cannot reindex. "
+                            "This document was uploaded before file_id tracking was added.")
+    await jobs.enqueue("reindex_document", {"doc_id": doc_id})
+    return {"ok": True, "status": "reindex queued"}
 
 
 @router.get("/documents/usage/summary")

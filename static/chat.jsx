@@ -264,6 +264,93 @@ function DebugTrace({ data }) {
   );
 }
 
+/* ── Burst-message renderer (Mirae / texting persona) ────────────────────────
+   Text with " ||| " delimiters is rendered as a sequence of text bubbles —
+   one per segment — rather than one monolithic AiBlock.  AiBlock is still
+   used for every response that contains no delimiter (backward-compatible).   */
+function BurstBlock({ text, model, isLast, streaming, timestamp }) {
+  const [showTs, setShowTs] = React.useState(false);
+
+  // Split on the canonical delimiter; filter out any empty segments from trim.
+  const parts = (text || '').split(' ||| ');
+  // While streaming the last segment is still being typed; everything before it
+  // is a "sent" bubble.  When not streaming, all segments are complete.
+  const doneParts = (streaming ? parts.slice(0, -1) : parts).filter(s => s.trim());
+  const activePart = streaming ? parts[parts.length - 1] : null;
+
+  const bubbleStyle = (i, total) => ({
+    fontFamily: 'var(--font-b)',
+    fontSize: 15.5,
+    lineHeight: 1.68,
+    color: 'var(--text)',
+    padding: '9px 14px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 16,
+    // First bubble: square top-left corner to signal "start of turn"
+    borderTopLeftRadius: i === 0 ? 4 : 16,
+    alignSelf: 'flex-start',
+    maxWidth: '92%',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  });
+
+  return (
+    <div className="fade-up" style={{ flexShrink: 0 }}>
+      {/* colophon — shown once for the whole burst group */}
+      <div
+        onMouseEnter={() => setShowTs(true)}
+        onMouseLeave={() => setShowTs(false)}
+        style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}
+      >
+        <ModelBadge model={model}/>
+        <span style={{ color:'var(--text-3)', fontSize:10 }}>—</span>
+        <span style={{ fontFamily:'var(--font-d)', fontSize:12.5, fontStyle:'italic', color:'var(--text-3)' }}>
+          Atelier
+        </span>
+        {timestamp && (
+          <span style={{
+            fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
+            marginLeft:'auto', opacity: showTs ? 0.7 : 0,
+            transition:'opacity 0.15s ease', letterSpacing:'.04em',
+          }}>
+            {timestamp}
+          </span>
+        )}
+      </div>
+      {/* vertical bar + bubble column */}
+      <div style={{ display:'flex', gap:20 }}>
+        <div style={{ width:1.5, background:'var(--bar)', borderRadius:1, flexShrink:0 }}/>
+        <div style={{ flex:1, display:'flex', flexDirection:'column', gap:8 }}>
+          {doneParts.map((burst, i) => (
+            <div key={i} style={bubbleStyle(i, doneParts.length)}>
+              {burst.trim()}
+            </div>
+          ))}
+          {/* The in-progress (streaming) bubble */}
+          {activePart !== null && (
+            <div style={bubbleStyle(doneParts.length, doneParts.length + 1)}>
+              {activePart}
+              <span style={{
+                display:'inline-block', width:2, height:14,
+                background:'var(--accent)', animation:'writing 1.1s step-end infinite', marginLeft:2,
+              }}/>
+            </div>
+          )}
+          {isLast && !streaming && (
+            <div style={{ display:'flex', gap:6, marginTop:6 }}>
+              <button onClick={() => navigator.clipboard.writeText(text || '')}
+                style={{ fontFamily:'var(--font-m)', fontSize:9.5, color:'var(--text-3)',
+                  padding:'2px 9px', border:'1px solid var(--border-2)', borderRadius:10,
+                  cursor:'pointer', background:'transparent' }}>Copy</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onToggleTheme, onOpenSettings, onNav, onPlay, activeProject, onExitProject, projectId, onMoved, openSessionId, onConsumeOpen }) {
   // projectId set → this chat is embedded inside a project: all session list/
   // create/seed calls are scoped to it, and the global localStorage cache is
@@ -792,9 +879,12 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
                 )}
                 {item.search && <WebSearchTrace trace={item.search}/>}
                 {item.prov && <ProvenanceChips prov={item.prov} onNav={onNav}/>}
-                {item.text && <AiBlock text={item.text} model={item.model} isLast={item.isLast}
-                  timestamp={fmtTime(createdAt)}/>}
-                {item.debug && <DebugTrace data={item.debug}/>}
+                {item.text && (
+                  item.text.includes(' ||| ')
+                    ? <BurstBlock text={item.text} model={item.model} isLast={item.isLast} timestamp={fmtTime(createdAt)}/>
+                    : <AiBlock    text={item.text} model={item.model} isLast={item.isLast} timestamp={fmtTime(createdAt)}/>
+                )}
+                {/* DebugTrace hidden */}
               </div>
             );
           }
@@ -879,9 +969,11 @@ function ChatSurface({ onSetup, onSearchSetup, onWeatherSetup, onStockSetup, onT
               );
             })()}
             {streamBuf && (
-              <AiBlock text={streamBuf} model={activeModel} streaming={true}/>
+              streamBuf.includes(' ||| ')
+                ? <BurstBlock text={streamBuf} model={activeModel} streaming={true}/>
+                : <AiBlock    text={streamBuf} model={activeModel} streaming={true}/>
             )}
-            {streamDebug && <DebugTrace data={streamDebug}/>}
+            {/* DebugTrace hidden */}
           </div>
         )}
         {error && (
