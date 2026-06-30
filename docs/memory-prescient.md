@@ -523,7 +523,7 @@ Insight atoms appear in chat context labeled as inferred. The model knows that `
 
 Not all queries should trigger a memory lookup. "What is the capital of France?" does not need my memory. "What's my name?" does.
 
-**As of W1 (see `docs/spec-implementation.md`)** this is handled by the cognitive-mode gate, not the older boolean `memory_relevance()`. Before `retrieve()` fires, `retrieval_mode(text)` in `services/intent.py` classifies the turn into one of six modes — `tool`, `no_context`, `factual`, `technical`, `exploratory`, `personal` — and each maps to a retrieval policy in `intent.MODE_POLICIES` (consumed via `retrieval.policy_for`). The policy decides which sources are queried, the candidate count `k`, the cosine floor `min_cos`, the token budget, and whether personal-flavoured atoms are suppressed.
+This is handled by the cognitive-mode gate, not the older boolean `memory_relevance()`. Before `retrieve()` fires, `retrieval_mode(text)` in `services/intent.py` classifies the turn into one of six modes — `tool`, `no_context`, `factual`, `technical`, `exploratory`, `personal` — and each maps to a retrieval policy in `intent.MODE_POLICIES` (consumed via `retrieval.policy_for`). The policy decides which sources are queried, the candidate count `k`, the cosine floor `min_cos`, the token budget, and whether personal-flavoured atoms are suppressed.
 
 - `tool` / `no_context` → `inject_memory: False` (ambient memory suppressed entirely).
 - `factual` → tight, high-precision (small `k`, high `min_cos`).

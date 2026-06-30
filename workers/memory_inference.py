@@ -171,9 +171,6 @@ def _digest(atoms: list[dict]) -> str:
 async def infer_memory(payload: dict | None = None):
     if not await _cfg("memory.inference_enabled"):
         return
-    # Same gate as extraction: only run when memory is on.
-    if str(await config.get_setting("memory.tier_selected") or "").lower() != "true":
-        return
 
     max_atoms    = await _cfg("memory.inference_max_atoms")
     min_evidence = await _cfg("intake.inference_min_evidence")
@@ -252,8 +249,6 @@ async def infer_turn(payload: dict | None = None):
     """
     payload = payload or {}
     if not await _cfg("memory.turn_inference_enabled"):
-        return []
-    if str(await config.get_setting("memory.tier_selected") or "").lower() != "true":
         return []
 
     user_text = (payload.get("user_text") or "").strip()

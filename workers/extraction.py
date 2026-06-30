@@ -331,16 +331,6 @@ async def extract_memory(payload: dict):
     if memory_off or (not user_text and not assistant_text):
         return _skip("memory disabled or empty turn")
 
-    # Tier gate: block only if explicitly disabled.
-    # If never configured (None), auto-enable at basic so extraction works out of the box.
-    tier_raw = await config.get_setting("memory.tier_selected")
-    if tier_raw is None:
-        await config.set_setting("memory.tier_selected", "true")
-        await config.set_setting("memory.tier", "basic")
-        await config.set_setting("memory.depth", "basic")
-    elif str(tier_raw).lower() != "true":
-        return _skip("memory tier disabled")
-
     source_kind = payload.get("source_kind", "chat")
     source_id   = payload.get("source_id")
     project_id  = payload.get("project_id") or None
@@ -530,13 +520,11 @@ async def extract_memory(payload: dict):
         if modality == "commitment" and assistant_text:
             await _route_commitment(atom, source_id, user_text, assistant_text)
 
-        # Hypothesis testing (Fix 5) — only for prescient tier, never on the hot path
-        # (extraction is already background; hypothesis testing is a cheap model call)
+        # Hypothesis testing — background cheap-model call, never on the hot path
         if atom and modality not in ("hypothesis", "insight") and source_kind == "chat":
-            if await config.get_setting("memory.tier") == "prescient":
-                from workers.memory_prescient import test_hypotheses_against_atom
-                import asyncio
-                asyncio.create_task(test_hypotheses_against_atom(atom))
+            from workers.memory_prescient import test_hypotheses_against_atom
+            import asyncio
+            asyncio.create_task(test_hypotheses_against_atom(atom))
 
     # W2 Ex2: read what was implied-but-not-said in this turn. Background job
     # (own cheap-model call), gated to meaningful chat turns that produced atoms

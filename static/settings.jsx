@@ -12,137 +12,7 @@ const SECTIONS = [
   { id:'endpoints', label:'Endpoints',     icon:'plus'   },
   { id:'models',    label:'Models',        icon:'chat'   },
   { id:'persona',   label:'System Prompt', icon:'notes'  },
-  { id:'memory',    label:'Memory',        icon:'memory' },
 ];
-
-// ── Memory tier section ───────────────────────────────────────────────────────
-
-const TIER_LABELS = {
-  basic:      { title:'Basic',      cost:'< $0.50/mo',    desc:'Extracts and stores facts. No background jobs.' },
-  reflective: { title:'Reflective', cost:'$1.00–2.00/mo', desc:'Adds conflict detection and goal staleness checks.' },
-  prescient:  { title:'Prescient',  cost:'$2.00–5.00/mo', desc:'Adds hypothesis generation, drift analysis, and narrative.' },
-};
-
-function MemoryTierSection() {
-  const [tier, setTier]       = useState(null);   // current depth string or null
-  const [selected, setSelected] = useState(null); // radio selection
-  const [saving, setSaving]   = useState(false);
-  const [saved, setSaved]     = useState(false);
-
-  useEffect(() => {
-    fetch('/api/memory/tier')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d) {
-          const depth = d.tier_selected ? (d.depth || 'basic') : null;
-          setTier(depth);
-          setSelected(depth || 'basic');
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  async function handleSave() {
-    if (!selected || selected === tier) return;
-    setSaving(true);
-    try {
-      await fetch('/api/memory/tier', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ depth: selected }),
-      });
-      setTier(selected);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch(e) {}
-    setSaving(false);
-  }
-
-  const TIER_KEYS = ['basic','reflective','prescient'];
-  const isFirstSetup = tier === null;
-  const isUpgrade   = !isFirstSetup && selected && TIER_KEYS.indexOf(selected) > TIER_KEYS.indexOf(tier);
-  const isDowngrade = !isFirstSetup && selected && TIER_KEYS.indexOf(selected) < TIER_KEYS.indexOf(tier);
-
-  return (
-    <div id="section-memory" style={{ marginBottom: 40 }}>
-      <SectionLabel style={{ marginBottom: 20 }}>Memory Tier</SectionLabel>
-
-      {isFirstSetup && (
-        <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)',
-          fontStyle:'italic', marginBottom:14 }}>
-          Memory extraction is off. Select a tier below to enable it.
-        </p>
-      )}
-
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {Object.entries(TIER_LABELS).map(([key, info]) => {
-          const on = selected === key;
-          return (
-            <label key={key} style={{
-              display:'flex', alignItems:'flex-start', gap:14, padding:'14px 16px',
-              border:`1px solid ${on ? 'var(--accent-bd)' : 'var(--border-2)'}`,
-              borderRadius:8, cursor:'pointer',
-              background: on ? 'var(--accent-bg)' : 'var(--nav-bg)',
-              transition:'all var(--t)',
-            }}>
-              <input type="radio" name="memory_tier" value={key}
-                checked={on} onChange={() => setSelected(key)}
-                style={{ marginTop:3, accentColor:'var(--accent)', flexShrink:0 }}/>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:2 }}>
-                  <span style={{ fontFamily:'var(--font-b)', fontSize:14, fontStyle:'italic',
-                    color: on ? 'var(--text)' : 'var(--text-2)' }}>{info.title}</span>
-                  <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--text-3)',
-                    padding:'2px 6px', border:'1px solid var(--border)', borderRadius:3 }}>
-                    ~{info.cost}
-                  </span>
-                  {key === tier && (
-                    <span style={{ fontFamily:'var(--font-m)', fontSize:9, color:'var(--accent)',
-                      letterSpacing:'.08em', textTransform:'uppercase' }}>current</span>
-                  )}
-                </div>
-                <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)', lineHeight:1.55 }}>
-                  {info.desc}
-                </p>
-              </div>
-            </label>
-          );
-        })}
-
-        {selected !== tier && (
-          <div style={{ marginTop:6, padding:'12px 16px',
-            border:'1px solid var(--border-2)', borderRadius:8, background:'var(--nav-bg)',
-            display:'flex', alignItems:'center', justifyContent:'space-between', gap:16 }}>
-            <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-3)', lineHeight:1.55 }}>
-              {isFirstSetup
-                ? 'Memory extraction will be enabled immediately after saving.'
-                : isUpgrade
-                  ? 'Upgrading takes effect immediately — new, richer processing begins.'
-                  : isDowngrade
-                    ? 'Downgrading stops further higher-tier processing. Existing memories are kept.'
-                    : ''}
-            </p>
-            <button onClick={handleSave} disabled={saving} style={{
-              fontFamily:'var(--font-b)', fontSize:12, fontStyle:'italic',
-              padding:'7px 18px', borderRadius:6,
-              background:'var(--accent)', color:'#fff', border:'none',
-              cursor: saving ? 'wait' : 'pointer', flexShrink:0,
-              opacity: saving ? 0.7 : 1, transition:'opacity var(--t)',
-            }}>
-              {saving ? 'Saving…' : isFirstSetup ? 'Enable' : 'Save'}
-            </button>
-          </div>
-        )}
-
-        {saved && (
-          <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--accent)', marginTop:4 }}>
-            {isFirstSetup ? 'Memory extraction enabled.' : 'Tier updated.'}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function SettingsSurface({ initialSection }) {
   const [config, setConfig]       = useState(null);
@@ -205,7 +75,6 @@ function SettingsSurface({ initialSection }) {
           <EndpointSection {...sectionProps} />
           <ModelSection {...sectionProps} />
           <PersonaSection {...sectionProps} />
-          <MemoryTierSection/>
         </div>
       </div>
     );
@@ -255,7 +124,6 @@ function SettingsSurface({ initialSection }) {
           <EndpointSection {...sectionProps} />
           <ModelSection {...sectionProps} />
           <PersonaSection {...sectionProps} />
-          <MemoryTierSection/>
         </div>
       </div>
     </div>

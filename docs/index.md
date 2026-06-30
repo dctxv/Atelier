@@ -10,7 +10,7 @@ This isn't meant to be shared software in the polished sense. It runs locally. B
 
 These docs exist so that when I come back to this in six months, or when I hand it off to someone, the thinking is all here — not just what was built, but why it was built that way and what I decided not to do.
 
-> **A note on the evolution.** Earlier versions of these docs said "there's no database because I don't need one yet" and "there's no auth because I'm the only user." Both were true for the first iteration — the whole app ran on a handful of `data/*.json` files. That stopped scaling the moment I wanted the surfaces to actually *talk to each other*: a shared memory that chat writes to and research reads from, retrieval that works at fifty thousand entries, background jobs that don't block a reply. So I rebuilt the backend around a **shared core** — one SQLite database, one embedding function, one retrieval layer, one job system — and every feature now plugs into it. Auth exists too, but it's deliberately opt-in: still off by default on `127.0.0.1`, ready the day I bind to the LAN. The JSON era is documented where relevant because the migration path matters, but the JSON files are retired. See [shared-core.md](shared-core.md) for the architecture and [latency-testing.md](latency-testing.md) for how I proved it's fast.
+> The backend runs on a **shared core** — one SQLite database, one embedding function, one retrieval layer, one job system — and every feature plugs into it. Auth is opt-in: off by default on `127.0.0.1`, ready when bound to the LAN. See [shared-core.md](shared-core.md) for the architecture and [latency-testing.md](latency-testing.md) for the bench results.
 
 ---
 
@@ -25,8 +25,6 @@ These docs exist so that when I come back to this in six months, or when I hand 
 | [shell-navigation.md](shell-navigation.md) | Left rail, chat tab bar, drag-scroll, theme toggle |
 | [chat-surface.md](chat-surface.md) | Chat UI, SSE streaming, session persistence, model selection, command palette, block rendering |
 | [setup-flow.md](setup-flow.md) | Welcome modal, 4-step API endpoint wizard (incl. background model), first-run experience |
-| [surfaces.md](surfaces.md) | Memory, Notes, and Research surfaces (frontend) |
-| [inline-rendering.md](inline-rendering.md) | Bold text, emoji fix, inline markdown parsing |
 | [repository.md](repository.md) | Git setup, secret protection, start.ps1 |
 
 ### Backend — the shared core and the features on top of it
@@ -35,17 +33,12 @@ These docs exist so that when I come back to this in six months, or when I hand 
 |---|---|
 | [shared-core.md](shared-core.md) | The one database / one embed / one retrieval / one job system everything plugs into |
 | [memory.md](memory.md) | Living Memory System v2 — structured atoms, predicate categories, decay, reconciliation, hypotheses, drift, all endpoints |
-| [memory-tier-selection.md](memory-tier-selection.md) | Tier selection setup screen, opt-in gating, Essential / Living / Prescient depth system |
 | [memory-prescient.md](memory-prescient.md) | Prescient Memory Part 1 — strands, stale-self-image guard, suppression atoms, warming, hypothesis engine v2, weekly diff |
-| [flashcards.md](flashcards.md) | FSRS-6 scheduling, decks, paste import, AI card generation |
-| [sharing.md](sharing.md) | Expiring share links over uploaded files |
 | [web-search.md](web-search.md) | The search layer — freshness, cache, provider fallback chain, rerank, real-time |
 | [research-pipeline.md](research-pipeline.md) | Planner → parallel sub-agents → grounded synthesis |
-| [notes-cowriter.md](notes-cowriter.md) | Selection-based AI writing actions |
-| [email.md](email.md) | IMAP sync, categorize, on-demand drafts, explicit-send-only |
 | [mcp.md](mcp.md) | Acting as an MCP client, the approval gate for destructive tools |
 | [latency-testing.md](latency-testing.md) | The instrumentation, the bench harness, and the bottlenecks I actually found |
-| [v2-deferred.md](v2-deferred.md) | What's still deferred (and what shipped in v2) |
+| [v2-deferred.md](v2-deferred.md) | What's still deferred |
 
 ---
 

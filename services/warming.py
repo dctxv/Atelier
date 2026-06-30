@@ -277,15 +277,11 @@ async def warm_session(session_id: str, project_id: str | None = None) -> None:
     Fires after POST /api/sessions.  Never blocks the session creation response.
     """
     try:
-        tier = (await config.get_setting("memory.tier") or "living").strip().lower()
-        if tier == "essential":
-            return
-
         budget = int(await _get_cfg("chat.memory_block_budget", 700))
         ttl = int(await _get_cfg("memory.warm_ttl_s", 600))
         mutation_seq = await _current_mutation_seq()
 
-        query_vec_bytes = await _blend_query_vec(session_id, project_id if tier == "prescient" else None)
+        query_vec_bytes = await _blend_query_vec(session_id, project_id)
         if not query_vec_bytes:
             return
 

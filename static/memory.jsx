@@ -2,23 +2,11 @@
 /* Design language: parchment palette, Cormorant italic display,
    Lora prose, IBM Plex Mono 9px/.14em uppercase labels, 1px warm borders,
    no shadows, 10-12px radii, 160ms ease transitions, fadeUp entry.       */
-const { useState, useEffect, useCallback, useRef, useMemo } = React;
+const { useState, useEffect, useCallback, useRef, useMemo, useTransition } = React;
 
-// ── Tier config ────────────────────────────────────────────────────────────
-const TIER_ORDER = { essential: 0, living: 1, prescient: 2 };
-
-const TIER_TABS = {
-  essential:  ['fragments'],
-  living:     ['overview', 'fragments', 'review', 'goals', 'timelines'],
-  prescient:  ['overview', 'fragments', 'review', 'goals', 'timelines', 'inferred'],
-};
 const TAB_LABELS = {
   overview: 'Overview', fragments: 'Garden', review: 'Review',
   goals: 'Goals', timelines: 'Timelines', inferred: 'Inferred',
-};
-const TAB_MIN_TIER = {
-  overview: 'living', fragments: 'essential', review: 'living',
-  goals: 'living', timelines: 'living', inferred: 'prescient',
 };
 
 // ── Style helpers ──────────────────────────────────────────────────────────
@@ -393,12 +381,18 @@ function GardenTab() {
   const [query, setQuery] = useState('');
   const [modFilter, setModFilter] = useState('all');
   const [selectedAtom, setSelectedAtom] = useState(null);
+  const [isPending, startTransition] = useTransition();
 
   const load = useCallback(() => {
     setLoading(true);
     fetch('/api/memory/graph')
       .then(r => r.ok ? r.json() : null)
-      .then(d => { setGraphData(d); setLoading(false); })
+      .then(d => {
+        startTransition(() => {
+          setGraphData(d);
+          setLoading(false);
+        });
+      })
       .catch(() => setLoading(false));
   }, []);
 
@@ -406,25 +400,18 @@ function GardenTab() {
 
   function handleUpdate() { load(); setSelectedAtom(null); }
 
-  if (loading) return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center',
-      justifyContent: 'center' }}>
-      <Pulse size={8}/>
-    </div>
-  );
-  if (!graphData) return null;
+  const allStrands = useMemo(() => {
+    if (!graphData) return [];
+    return [
+      ...(graphData.strands || []).filter(s => s.id !== '_unstranded'),
+      {
+        id: '_unstranded', name: 'Unsorted', label: 'Unsorted',
+        color: '#9A8A78', atoms: graphData.unstranded || [],
+      },
+    ].filter(s => (s.atoms || []).length > 0);
+  }, [graphData]);
 
-  const allStrands = [
-    ...(graphData.strands || []).filter(s => s.id !== '_unstranded'),
-    {
-      id: '_unstranded', name: 'Unsorted', label: 'Unsorted',
-      color: '#9A8A78', atoms: graphData.unstranded || [],
-    },
-  ].filter(s => (s.atoms || []).length > 0);
-
-  const MODALITIES = ['all', 'factual', 'opinion', 'desire', 'plan', 'insight', 'hypothesis'];
-
-  function filterAtoms(atoms) {
+  const filterAtoms = useCallback((atoms) => {
     return atoms.filter(a => {
       if (modFilter !== 'all' && a.modality !== modFilter) return false;
       if (query) {
@@ -434,10 +421,24 @@ function GardenTab() {
       }
       return true;
     });
-  }
+  }, [modFilter, query]);
 
-  const allAtoms = allStrands.flatMap(s => s.atoms || []);
-  const pinnedFiltered = allAtoms.filter(a => a.pinned && filterAtoms([a]).length > 0);
+  const allAtoms = useMemo(() => allStrands.flatMap(s => s.atoms || []), [allStrands]);
+
+  const pinnedFiltered = useMemo(
+    () => allAtoms.filter(a => a.pinned && filterAtoms([a]).length > 0),
+    [allAtoms, filterAtoms]
+  );
+
+  if (loading || isPending) return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center',
+      justifyContent: 'center' }}>
+      <Pulse size={8}/>
+    </div>
+  );
+  if (!graphData) return null;
+
+  const MODALITIES = ['all', 'factual', 'opinion', 'desire', 'plan', 'insight', 'hypothesis'];
 
   return (
     <div style={{ flex: 1, overflow: 'hidden', display: 'flex',
@@ -895,26 +896,18 @@ function GoalsTab({ goals }) {
 }
 
 // ── Timelines tab ────────────────────────────────────────────────────────────
-function TimelinesTab({ tier }) {
+function TimelinesTab() {
   const [strands, setStrands] = useState([]);
   const [selectedStrand, setSelectedStrand] = useState(null);
   const [strandData, setStrandData] = useState(null);
   const [loadingStrand, setLoadingStrand] = useState(false);
-  const [basicTimeline, setBasicTimeline] = useState(null);
   const [filterFrom, setFilterFrom] = useState(0);
 
   useEffect(() => {
-    if (tier === 'prescient') {
-      fetch('/api/memory/strands').then(r => r.ok ? r.json() : null).then(d => {
-        if (d) setStrands(d.strands || []);
-      });
-    } else {
-      // Living: basic predicate chain list
-      fetch('/api/memory/timeline').then(r => r.ok ? r.json() : null).then(d => {
-        if (d) setBasicTimeline(d);
-      });
-    }
-  }, [tier]);
+    fetch('/api/memory/strands').then(r => r.ok ? r.json() : null).then(d => {
+      if (d) setStrands(d.strands || []);
+    });
+  }, []);
 
   async function loadStrand(id) {
     setSelectedStrand(id);
@@ -926,24 +919,7 @@ function TimelinesTab({ tier }) {
     setLoadingStrand(false);
   }
 
-  if (tier === 'living') {
-    return (
-      <div className="scroll" style={{ flex:1, background:'var(--thread-bg)' }}>
-        <div style={{ maxWidth:760, margin:'0 auto', padding:'32px 40px' }}>
-          <SectionLabel style={{ marginBottom:20 }}>Timelines</SectionLabel>
-          {!basicTimeline ? (
-            <Pulse size={8}/>
-          ) : (
-            Object.entries(basicTimeline.predicates || {}).map(([pred, chain]) => (
-              <BasicChain key={pred} predicate={pred} chain={chain}/>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // Prescient: strand lanes
+  // Strand lanes
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
       {/* Strand sidebar */}
@@ -1412,16 +1388,13 @@ function ActiveMemoryPanel({ onTabSwitch }) {
 }
 
 // ── Overview tab ─────────────────────────────────────────────────────────────
-function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
+function OverviewTab({ memories, questions, goals, onTabSwitch }) {
   const openQCount = (questions.open || []).length;
-  const inferredCount = tier === 'prescient' ? null : null; // loaded lazily
   const [inferredData, setInferredData] = useState(null);
 
   useEffect(() => {
-    if (tier === 'prescient') {
-      fetch('/api/memory/inferred').then(r => r.ok?r.json():null).then(setInferredData);
-    }
-  }, [tier]);
+    fetch('/api/memory/inferred').then(r => r.ok?r.json():null).then(setInferredData);
+  }, []);
 
   const openHypCount = inferredData?.hypotheses?.length || 0;
 
@@ -1447,7 +1420,7 @@ function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
           {monoLabel(`${memories.length} fragments`)}
           <span style={{ color:'var(--border-2)' }}>·</span>
           {monoLabel(`${memories.filter(m=>m.pinned).length} pinned`)}
-          {tier === 'prescient' && totalPrecision !== null && (
+          {totalPrecision !== null && (
             <>
               <span style={{ color:'var(--border-2)' }}>·</span>
               {monoLabel(`inference ${totalPrecision}% (n=${nEntries})`, 'var(--accent)')}
@@ -1516,27 +1489,25 @@ function OverviewTab({ memories, questions, goals, tier, onTabSwitch }) {
             )}
           </Card>
 
-          {/* Inferred (prescient only) */}
-          {tier === 'prescient' && (
-            <Card onClick={() => onTabSwitch('inferred')} style={{ cursor:'pointer' }}>
-              <SectionLabel right={openHypCount > 0 ? `${openHypCount} open` : ''} style={{ marginBottom:12 }}>
-                Inferred knowledge
-              </SectionLabel>
-              {totalPrecision !== null ? (
-                <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-2)' }}>
-                  Inference accuracy — <strong style={{ color:'var(--accent)' }}>{totalPrecision}%</strong>
-                  {nEntries > 0 ? ` (n=${nEntries})` : ''}
-                </p>
-              ) : (
-                <p style={{ fontFamily:'var(--font-b)', fontSize:13, color:'var(--text-2)',
-                  fontStyle:'italic' }}>
-                  {openHypCount > 0
-                    ? `${openHypCount} hypothesis${openHypCount!==1?'es':''} forming`
-                    : 'Hypotheses form weekly.'}
-                </p>
-              )}
-            </Card>
-          )}
+          {/* Inferred */}
+          <Card onClick={() => onTabSwitch('inferred')} style={{ cursor:'pointer' }}>
+            <SectionLabel right={openHypCount > 0 ? `${openHypCount} open` : ''} style={{ marginBottom:12 }}>
+              Inferred knowledge
+            </SectionLabel>
+            {totalPrecision !== null ? (
+              <p style={{ fontFamily:'var(--font-m)', fontSize:11, color:'var(--text-2)' }}>
+                Inference accuracy — <strong style={{ color:'var(--accent)' }}>{totalPrecision}%</strong>
+                {nEntries > 0 ? ` (n=${nEntries})` : ''}
+              </p>
+            ) : (
+              <p style={{ fontFamily:'var(--font-b)', fontSize:13, color:'var(--text-2)',
+                fontStyle:'italic' }}>
+                {openHypCount > 0
+                  ? `${openHypCount} hypothesis${openHypCount!==1?'es':''} forming`
+                  : 'Hypotheses form weekly.'}
+              </p>
+            )}
+          </Card>
         </div>
       </div>
     </div>
@@ -1697,7 +1668,6 @@ function MemorySurface() {
   const [goals, setGoals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reviewBadge, setReviewBadge] = useState(0);
-  const [tier, setTier] = useState('living');
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -1712,14 +1682,8 @@ function MemorySurface() {
       setQuestions(qData);
       setReviewBadge((qData.open||[]).length + ((revData.counts||{}).total||0));
       setGoals(goalData.goals || []);
-      // Tier comes from app_config; the /config endpoint doesn't include it, so
-      // try the dedicated settings route if available
       setLoading(false);
     });
-    // Load tier from the dedicated endpoint (always returns a safe default; no 404)
-    fetch('/api/memory/tier').then(r=>r.ok?r.json():null).then(d => {
-      if (d && d.depth) setTier(d.depth);
-    }).catch(() => {});
   }, []);
 
   // Silent background poll — only the three endpoints that change after extraction
@@ -1746,14 +1710,6 @@ function MemorySurface() {
     return () => clearInterval(id);
   }, [refreshDynamic]);
 
-  // Snap to a valid tab for the current tier
-  useEffect(() => {
-    const valid = TIER_TABS[tier] || TIER_TABS.living;
-    if (!valid.includes(tab)) {
-      setTab(valid[0]);
-    }
-  }, [tier]);
-
   async function handleResolve(questionId, choice, atomId, detail) {
     await fetch(`/api/memory/questions/${questionId}/resolve`, {
       method:'POST',
@@ -1763,13 +1719,7 @@ function MemorySurface() {
     loadData();
   }
 
-  const currentTierRank = TIER_ORDER[tier] ?? 1;
   const allTabs = ['overview','fragments','review','goals','timelines','inferred'];
-
-  function tabAllowed(t) {
-    const minTier = TAB_MIN_TIER[t] || 'essential';
-    return currentTierRank >= (TIER_ORDER[minTier] ?? 0);
-  }
 
   if (loading) return (
     <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', opacity:.4 }}>
@@ -1786,11 +1736,9 @@ function MemorySurface() {
         borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center',
         justifyContent:'center', padding:'0 20px', gap:0, overflowX:'auto' }}>
         {allTabs.map(t => {
-          const allowed = tabAllowed(t);
           const on = tab === t;
           const label = TAB_LABELS[t] || t.charAt(0).toUpperCase()+t.slice(1);
           const badge = t==='review' ? reviewBadge : 0;
-          if (!allowed) return null; // hide above-tier tabs entirely
           return (
             <button key={t} onClick={() => setTab(t)} style={{
               padding:'0 14px', margin:'0 2px',
@@ -1822,14 +1770,14 @@ function MemorySurface() {
         {tab==='overview' && (
           <OverviewTab
             memories={memories} questions={questions} goals={goals}
-            tier={tier} onTabSwitch={setTab}/>
+            onTabSwitch={setTab}/>
         )}
         {tab==='fragments' && <GardenTab/>}
         {tab==='review' && (
           <ReviewTab questions={questions} onResolve={handleResolve} onChange={loadData}/>
         )}
         {tab==='goals' && <GoalsTab goals={goals}/>}
-        {tab==='timelines' && <TimelinesTab tier={tier}/>}
+        {tab==='timelines' && <TimelinesTab/>}
         {tab==='inferred' && <InferredTab/>}
       </div>
     </div>

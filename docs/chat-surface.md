@@ -151,14 +151,6 @@ KaTeX is loaded via CDN (`cdn.jsdelivr.net/npm/katex@0.16.8`) and its CSS is in 
 
 The model persona prompt mandates `\( \)` and `\[ \]`, so removing `$` has no practical downside.
 
-### What I considered and didn't build
-
-**A markdown library** — I thought seriously about using marked.js or remark. Decided against it: markdown rendering introduces opinionated HTML that's hard to style to match the Atelier aesthetic, and importing a minified library is another dependency. The hand-written parser handles exactly the block types I need — nothing more.
-
-**Syntax highlighting** — Code blocks render verbatim in IBM Plex Mono. There's no token-level syntax colouring. Adding it would mean bundling a highlighter (Prism, Highlight.js) or calling a server. Not worth it yet; readable mono is enough.
-
-**Links** — `[text](url)` renders as plain text. The models I use rarely emit markdown links; when they do, the URL is visible in the surrounding text anyway.
-
 ---
 
 ## Model selection

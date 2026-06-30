@@ -26,11 +26,3 @@ The **approval gate** reads each tool's MCP annotations. A tool is allowed witho
 
 Any local execution is meant to be sandboxed — a restricted directory, an allowlist, a timeout — which is exactly why the recommended filesystem server is pointed at a single safe directory.
 
----
-
-## What I didn't build (v1)
-
-- **Automatic tool selection by the model** mid-conversation (true agentic tool-use loops). v1 invokes a named tool explicitly; wiring the model to *decide* which tool to call, then feeding results back into the stream, is the obvious next step but it's not v1.
-- **MCP over HTTP/SSE transports.** stdio only for now.
-- **Persistent server connections / connection pooling.** Each call is a fresh session.
-- **Resource and prompt primitives.** v1 uses the tools primitive only.

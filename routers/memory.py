@@ -40,28 +40,6 @@ def _legacy(atom: dict) -> dict:
     }
 
 
-# ── Tier selection (memory setup) ─────────────────────────────────────────────
-
-@router.get("/memory/tier")
-async def get_memory_tier():
-    raw = await config.get_setting("memory.tier_selected", "false")
-    tier_selected = str(raw or "false").lower() == "true"
-    depth = await config.get_setting("memory.depth", "basic") or "basic"
-    return {"tier_selected": tier_selected, "depth": depth}
-
-
-@router.post("/memory/tier")
-async def set_memory_tier(request: Request):
-    data = await request.json()
-    depth = data.get("depth", "basic")
-    if depth not in ("basic", "reflective", "prescient"):
-        raise HTTPException(400, "depth must be basic, reflective, or prescient")
-    await config.set_setting("memory.tier_selected", "true")
-    await config.set_setting("memory.depth", depth)
-    await config.set_setting("memory.tier", depth)  # used by tier_allows() gating
-    return {"ok": True, "depth": depth}
-
-
 # ── Memory CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("/memory")

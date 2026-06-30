@@ -720,10 +720,7 @@ async def retrieve(
             if mid not in mem_rows:
                 _debug_atom(row, "personal-flavoured memory suppressed for technical mode")
 
-    # Prescient-only stale-self-image guard (P1.2): annotate superseded atoms.
-    tier_row = await db.fetchone("SELECT value FROM app_config WHERE key='memory.tier'")
-    if tier_row and tier_row.get("value") == "prescient":
-        await _annotate_stale_self_image(mem_rows)
+    await _annotate_stale_self_image(mem_rows)
 
     def mem_final_score(r: dict) -> float:
         base = mem_scores.get(r["id"], 0.0)
